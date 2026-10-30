@@ -1,0 +1,45 @@
+[package]
+name = "md-coworker"
+version = "0.1.0"
+edition = "2024"
+description = "Real-time collaborative Markdown workspace built on Axum"
+
+[dependencies]
+# --- web framework ---
+anyhow = "1"
+axum = { version = "0.8", features = ["ws", "macros", "json", "tokio"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace", "set-header"] }
+
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- CRDT (Yjs compatible) ---
+yrs = "0.28"
+
+# --- crypto ---
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
+aes-gcm = "0.10"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+subtle = "2"
+rand = "0.8"
+
+# --- storage ---
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# --- misc ---
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+percent-encoding = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3.34"
+
+[profile.release]
+opt-level = 2

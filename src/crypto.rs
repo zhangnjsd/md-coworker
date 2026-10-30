@@ -1,0 +1,347 @@
+//! 密码学原语。
+//!
+//! ## 关于需求中的 "AES 512"
+//!
+//! AES 标准只有 128 / 192 / 256 位密钥，**不存在 AES-512**。本项目按"尽可能强、
+//! 且 512 bit 密钥材料"的含义落地为：
+//!
+//! * 主密钥：512 bit（64 字节）随机材料，独立文件 `data/master.key`，权限 0600；
+//! * 数据密钥派生：HKDF-SHA512（512 bit 输出的 PRK 扩展），从中截取 256 bit
+//!   作为 AES-256-GCM 的内容加密密钥；
+//! * 完整性：GCM 模式自带 128 bit 认证标签，任何篡改都会解密失败。
+//!
+//! 这样既符合"512 位熵 + SHA-512 派生"的意图，又保持标准 AES 实现（`aes-gcm`
+//! 为 RustCrypto 审计实现）。所有落盘的敏感数据（TOTP 种子、CRDT 快照）都用它加密。
+//!
+//! ## 身份认证
+//!
+//! 用户使用 Ed25519 密钥对做挑战-响应登录，口令永远不上送：服务端只保存公钥，
+//! 私钥只在创建/重置用户时一次性下发。
+
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit, Payload},
+};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use hmac::{Hmac, Mac};
+use rand::RngCore;
+use sha1::Sha1;
+use sha2::Sha512;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+type HmacSha1 = Hmac<Sha1>;
+type HmacSha512 = Hmac<Sha512>;
+
+// ---------------------------------------------------------------- HKDF-SHA512
+
+/// HKDF（RFC 5869），以 SHA-512 作为底层哈希，因此中间密钥材料是 512 bit。
+fn hkdf_sha512(salt: &[u8], ikm: &[u8], info: &[u8], len: usize) -> Vec<u8> {
+    let mut extract = <HmacSha512 as Mac>::new_from_slice(salt).expect("HMAC 接受任意长度密钥");
+    extract.update(ikm);
+    let prk = extract.finalize().into_bytes();
+
+    let mut okm = Vec::with_capacity(len);
+    let mut previous: Vec<u8> = Vec::new();
+    let mut counter: u8 = 1;
+    while okm.len() < len {
+        let mut expand = <HmacSha512 as Mac>::new_from_slice(&prk).expect("HMAC 接受任意长度密钥");
+        expand.update(&previous);
+        expand.update(info);
+        expand.update(&[counter]);
+        previous = expand.finalize().into_bytes().to_vec();
+        okm.extend_from_slice(&previous);
+        counter = counter.wrapping_add(1);
+    }
+    okm.truncate(len);
+    okm
+}
+
+// ---------------------------------------------------------------- AES-256-GCM
+
+/// 由 512 bit 主密钥派生的 AEAD 加密器（AES-256-GCM）。
+#[derive(Clone)]
+pub struct Cipher {
+    key: [u8; 32],
+}
+
+impl std::fmt::Debug for Cipher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Cipher(aes-256-gcm)")
+    }
+}
+
+impl Cipher {
+    pub fn from_master(master: &[u8]) -> Self {
+        let derived = hkdf_sha512(b"md-coworker/aes512", master, b"aes-256-gcm/data-key", 32);
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&derived);
+        Self { key }
+    }
+
+    /// 加密。输出 `12 字节 nonce || 密文 || 16 字节 tag`。
+    pub fn seal(&self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+        let cipher = Aes256Gcm::new_from_slice(&self.key).context("初始化 AES-256-GCM 失败")?;
+        let mut nonce = [0u8; 12];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad,
+                },
+            )
+            .map_err(|_| anyhow!("AES-256-GCM 加密失败"))?;
+        let mut out = Vec::with_capacity(12 + ciphertext.len());
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    pub fn open(&self, aad: &[u8], blob: &[u8]) -> Result<Vec<u8>> {
+        if blob.len() < 12 + 16 {
+            bail!("密文长度非法");
+        }
+        let (nonce, body) = blob.split_at(12);
+        let cipher = Aes256Gcm::new_from_slice(&self.key).context("初始化 AES-256-GCM 失败")?;
+        cipher
+            .decrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: body,
+                    aad,
+                },
+            )
+            .map_err(|_| anyhow!("AES-256-GCM 解密或完整性校验失败"))
+    }
+
+    pub fn seal_b64(&self, aad: &[u8], plaintext: &[u8]) -> Result<String> {
+        Ok(B64.encode(self.seal(aad, plaintext)?))
+    }
+
+    pub fn open_b64(&self, aad: &[u8], blob: &str) -> Result<Vec<u8>> {
+        let raw = B64.decode(blob).context("base64 解码失败")?;
+        self.open(aad, &raw)
+    }
+}
+
+// ---------------------------------------------------------------- 随机
+
+pub fn random_bytes(n: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; n];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    buf
+}
+
+/// URL 安全的会话令牌（256 bit）。
+pub fn random_token() -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    URL_SAFE_NO_PAD.encode(random_bytes(32))
+}
+
+// ---------------------------------------------------------------- Ed25519
+
+/// 生成 Ed25519 密钥对，返回 `(私钥 seed 的 base64, 公钥 base64)`。
+/// 私钥就是 32 字节 seed，客户端用 `nacl.sign.keyPair.fromSeed` 还原。
+pub fn generate_keypair() -> (String, String) {
+    let mut seed = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut seed);
+    let signing = SigningKey::from_bytes(&seed);
+    let public = signing.verifying_key();
+    (B64.encode(seed), B64.encode(public.to_bytes()))
+}
+
+pub fn verifying_key_from_b64(public_key_b64: &str) -> Result<VerifyingKey> {
+    let raw = B64.decode(public_key_b64.trim()).context("公钥 base64 非法")?;
+    let bytes: [u8; 32] = raw
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("公钥长度必须是 32 字节"))?;
+    VerifyingKey::from_bytes(&bytes).context("公钥不是合法的 Ed25519 曲线点")
+}
+
+/// 校验签名；任何异常都返回 `false`。
+pub fn verify_signature(public_key_b64: &str, message: &[u8], signature_b64: &str) -> bool {
+    let Ok(key) = verifying_key_from_b64(public_key_b64) else {
+        return false;
+    };
+    let Ok(raw) = B64.decode(signature_b64.trim()) else {
+        return false;
+    };
+    let Ok(bytes) = <[u8; 64]>::try_from(raw.as_slice()) else {
+        return false;
+    };
+    let signature = Signature::from_bytes(&bytes);
+    key.verify_strict(message, &signature).is_ok()
+}
+
+/// 服务端自测/维护用途：用 seed 签名。
+pub fn sign_with_seed_b64(seed_b64: &str, message: &[u8]) -> Result<String> {
+    let raw = B64.decode(seed_b64.trim()).context("私钥 base64 非法")?;
+    let seed: [u8; 32] = raw
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("私钥 seed 长度必须是 32 字节"))?;
+    let signing = SigningKey::from_bytes(&seed);
+    Ok(B64.encode(signing.sign(message).to_bytes()))
+}
+
+// ---------------------------------------------------------------- Base32 / TOTP
+
+const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+pub fn base32_encode(data: &[u8]) -> String {
+    let mut out = String::new();
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+    for &byte in data {
+        buffer = (buffer << 8) | byte as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            let index = ((buffer >> bits) & 0x1f) as usize;
+            out.push(BASE32_ALPHABET[index] as char);
+        }
+    }
+    if bits > 0 {
+        let index = ((buffer << (5 - bits)) & 0x1f) as usize;
+        out.push(BASE32_ALPHABET[index] as char);
+    }
+    out
+}
+
+pub fn base32_decode(text: &str) -> Result<Vec<u8>> {
+    let cleaned: Vec<u8> = text
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace() && *b != b'=')
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    let mut out = Vec::new();
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+    for byte in cleaned {
+        let value = BASE32_ALPHABET
+            .iter()
+            .position(|c| *c == byte)
+            .ok_or_else(|| anyhow!("非法 base32 字符: {}", byte as char))? as u32;
+        buffer = (buffer << 5) | value;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// 生成 32 字节随机 TOTP 种子（base32，无填充，160 bit 熵）。
+pub fn generate_totp_secret() -> String {
+    base32_encode(&random_bytes(20))
+}
+
+/// RFC 6238 TOTP：SHA-1、6 位、30 秒步长。
+pub fn totp_code(secret: &[u8], counter: u64) -> String {
+    let mut mac = <HmacSha1 as Mac>::new_from_slice(secret).expect("HMAC 接受任意长度密钥");
+    mac.update(&counter.to_be_bytes());
+    let digest = mac.finalize().into_bytes();
+    let offset = (digest[19] & 0x0f) as usize;
+    let binary = ((digest[offset] as u32 & 0x7f) << 24)
+        | ((digest[offset + 1] as u32) << 16)
+        | ((digest[offset + 2] as u32) << 8)
+        | (digest[offset + 3] as u32);
+    format!("{:06}", binary % 1_000_000)
+}
+
+pub fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 校验 TOTP，容忍前后各一个时间窗（±30 秒）。
+pub fn verify_totp(secret: &[u8], code: &str) -> bool {
+    let code = code.trim();
+    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let step = now_unix() / 30;
+    for delta in [-1i64, 0, 1] {
+        let counter = (step as i64 + delta).max(0) as u64;
+        let expected = totp_code(secret, counter);
+        // 常数时间比较，避免时序侧信道
+        if expected
+            .as_bytes()
+            .iter()
+            .zip(code.as_bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// `otpauth://` URL，供客户端渲染二维码。
+pub fn otpauth_url(issuer: &str, account: &str, secret_b32: &str) -> String {
+    format!(
+        "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
+        urlencode(issuer),
+        urlencode(account),
+        secret_b32,
+        urlencode(issuer)
+    )
+}
+
+fn urlencode(input: &str) -> String {
+    percent_encoding::utf8_percent_encode(input, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hkdf_outputs_full_length() {
+        let out = hkdf_sha512(b"salt", b"ikm", b"info", 64);
+        assert_eq!(out.len(), 64);
+        assert_ne!(out, hkdf_sha512(b"salt", b"ikm", b"other", 64));
+    }
+
+    #[test]
+    fn aes_roundtrip_and_tamper_detection() {
+        let cipher = Cipher::from_master(&[7u8; 64]);
+        let sealed = cipher.seal(b"aad", b"hello world").unwrap();
+        assert_eq!(cipher.open(b"aad", &sealed).unwrap(), b"hello world");
+        assert!(cipher.open(b"other-aad", &sealed).is_err());
+        let mut tampered = sealed.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        assert!(cipher.open(b"aad", &tampered).is_err());
+    }
+
+    #[test]
+    fn ed25519_sign_verify() {
+        let (seed, public) = generate_keypair();
+        let signature = sign_with_seed_b64(&seed, b"nonce").unwrap();
+        assert!(verify_signature(&public, b"nonce", &signature));
+        assert!(!verify_signature(&public, b"other", &signature));
+    }
+
+    #[test]
+    fn base32_roundtrip() {
+        let data = b"hello base32 world";
+        let encoded = base32_encode(data);
+        assert_eq!(base32_decode(&encoded).unwrap(), data);
+    }
+
+    #[test]
+    fn totp_matches_rfc6238_vectors() {
+        // RFC 6238 附录 B：secret "12345678901234567890"（SHA-1）, T=59s → 94287082
+        let secret = b"12345678901234567890";
+        assert_eq!(totp_code(secret, 59 / 30), "287082");
+    }
+}

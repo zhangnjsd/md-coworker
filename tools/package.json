@@ -1,0 +1,10 @@
+{
+  "name": "md-coworker-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0",
+    "yjs": "^13.6.20"
+  }
+}
