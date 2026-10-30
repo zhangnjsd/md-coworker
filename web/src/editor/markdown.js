@@ -26,7 +26,7 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
-import { undo, redo, yCollab } from 'y-codemirror.next'
+import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 
 const editorTheme = EditorView.theme(
   {
@@ -151,10 +151,8 @@ export function createMarkdownEditor(opts) {
         cmPlaceholder('开始输入…'),
         EditorView.contentAttributes.of({ spellcheck: 'false' }),
         keymap.of([
-          // Only y-codemirror's undo touches the CRDT (own edits only).
-          { key: 'Mod-z', run: () => undo(view), preventDefault: true },
-          { key: 'Mod-Shift-z', run: () => redo(view), preventDefault: true },
-          { key: 'Mod-y', run: () => redo(view), preventDefault: true },
+          // y-codemirror's undo manager only ever undoes *our own* edits.
+          ...yUndoManagerKeymap,
           ...foldKeymap,
           ...defaultKeymap,
           indentWithTab,

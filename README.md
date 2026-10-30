@@ -115,4 +115,15 @@ docs/protocol.md 前后端协议契约
 ```bash
 cargo test                 # 单元测试：HKDF / AES / Ed25519 / base32 / TOTP
 node tools/smoke.mjs       # 端到端：登录、文件、双客户端协作、presence、2FA、密钥轮换
+node tools/browser.mjs     # 真浏览器（Chromium）双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
 ```
+
+`tools/` 需要先 `cd tools && npm install`（ws / yjs / tweetnacl / puppeteer-core）。
+
+## 前端体积取舍
+
+首屏只加载入口 chunk（约 1.3MB，gzip 450KB）；Monaco（3.3MB）只有在打开非 Markdown 文件时
+才动态 `import()`，Mermaid（约 2.7MB）只有在文档里出现 ```mermaid 代码块时才加载。
+`vite.config.js` 里关掉了 `modulePreload`（否则 Vite 会替懒加载 chunk 生成 preload，
+浏览器首屏就把它们拉下来），也不再手写 `manualChunks`（手工拆 chunk 容易和懒加载边界
+形成循环 chunk 引用，运行时报 `Cannot access 'X' before initialization`）。

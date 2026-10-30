@@ -10,18 +10,12 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: false,
     chunkSizeWarningLimit: 8000,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) return
-          if (id.includes('monaco-editor')) return 'monaco'
-          if (id.includes('mermaid') || id.includes('cytoscape') || id.includes('dagre')) return 'mermaid'
-          if (id.includes('@codemirror') || id.includes('@lezer')) return 'codemirror'
-          if (id.includes('katex')) return 'katex'
-          return 'vendor'
-        },
-      },
-    },
+    // Monaco（3.4MB）与 Mermaid（2.7MB）都是按需动态加载的，如果让 Vite 给它们注入
+    // modulepreload，浏览器会在首屏就把它们拉下来，等于白做懒加载。
+    modulePreload: false,
+    // 不手动分 chunk：手写 manualChunks 很容易和懒加载边界形成"循环 chunk 引用"，
+    // 浏览器执行到时会撞上 TDZ（Cannot access 'X' before initialization）。
+    // 交给 Rollup 自己拆——monaco / mermaid 因为用动态 import 会自动独立成 chunk。
   },
   server: {
     port: 5173,

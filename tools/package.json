@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "puppeteer-core": "^25.16.0",
     "tweetnacl": "^1.0.3",
     "ws": "^8.18.0",
     "yjs": "^13.6.20"

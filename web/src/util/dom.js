@@ -108,10 +108,21 @@ export function iconButton(name, label, onClick, extraClass = '') {
   )
 }
 
-/** @param {string} type @param {string} text @param {Record<string, any>} [extra] */
-export function button(text, type = 'ghost', extra = {}) {
-  const { class: extraClass, ...rest } = extra
-  return el('button', { class: `btn btn-${type} ${extraClass || ''}`.trim(), attrs: { type: 'button' }, text, ...rest })
+/**
+ * @param {string} text
+ * @param {string} [type] primary | ghost | danger | subtle
+ * @param {Record<string, any>|Function} [extra] props object, or a bare click handler
+ * @param {string} [extraClass]
+ */
+export function button(text, type = 'ghost', extra = {}, extraClass = '') {
+  const opts = typeof extra === 'function' ? { on: { click: extra } } : { ...(extra || {}) }
+  const { class: cls, ...rest } = opts
+  return el('button', {
+    class: `btn btn-${type} ${cls || ''} ${extraClass || ''}`.trim(),
+    attrs: { type: 'button' },
+    text,
+    ...rest,
+  })
 }
 
 export function fmtClock(ts) {

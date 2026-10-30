@@ -144,3 +144,23 @@
 - `GET /api/health` → `200 {"ok":true,"version":"0.1.0"}`
 - 时间戳统一为毫秒整数（`mtime`, `ts`）或 RFC3339 字符串（`created_at`）。
 - 所有 mutating 请求要求 `Content-Type: application/json`。
+
+## 8. 实现补充约定（v1.1，前后端联调后冻结）
+
+这些是契约中原本含糊、在联调时确认下来的细节：
+
+- **`init.update` 一定是"完整 Yjs state update"**（即
+  `encode_state_as_update_v1(StateVector::default())` 的结果，base64）。
+  空文档时也是一个合法的空 update（`\x00\x00` → `AAA=`），客户端直接 `Y.applyUpdate` 即可，
+  不需要 sync step1/step2 往返。
+- **`presence.selection` 是数字**：当前选区长度（0 表示没有选中内容）。若以后要传完整选区，
+  会新增字段 `selection_range:{anchor,head}`，`selection` 保持向后兼容。
+- **`saved` 帧在每次真正写盘后都发**（400ms 防抖落盘、房间清空落盘、进程退出前 flush 均会发），
+  前端据此把状态栏切到"已保存"。
+- **同一个连接对同一 `path` 重复 `join` 是幂等的**（不会重复计数，也不会报错，会重新下发 `init`），
+  客户端重连后可以直接重发 `join`。
+- **`update`/`awareness` 帧必须先 `join`**，否则返回 `{"t":"error"}`；`awareness` 帧服务端只做
+  二进制中继，不解析内容。
+- 服务端收到 `update` 后**不回显给发送者**（`from_conn` 过滤），避免本地重复应用。
+- 协作中的文件被 `POST /api/files/{rename,delete}` 命中时返回 `409 file_busy`；
+  房间没有成员后会立刻落盘并从内存回收，快照若比磁盘文件旧会被视为过期并丢弃。

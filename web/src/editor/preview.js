@@ -3,7 +3,6 @@ import MarkdownIt from 'markdown-it'
 import katexPluginModule from '@vscode/markdown-it-katex'
 import hljs from 'highlight.js/lib/common'
 import DOMPurify from 'dompurify'
-import mermaid from 'mermaid'
 import 'katex/dist/katex.min.css'
 import 'highlight.js/styles/github-dark-dimmed.css'
 
@@ -39,21 +38,38 @@ try {
 }
 
 let mermaidCounter = 0
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'dark',
-  securityLevel: 'strict',
-  fontFamily: "'Inter', 'Noto Sans SC', system-ui, sans-serif",
-  themeVariables: {
-    background: '#11151b',
-    primaryColor: '#1c2532',
-    primaryTextColor: '#dbe3ee',
-    primaryBorderColor: '#334155',
-    lineColor: '#7c8ca1',
-    secondaryColor: '#1a2331',
-    tertiaryColor: '#141b24',
-  },
-})
+
+// Mermaid 体积约 2.7MB，只有在文档里真的出现 ```mermaid 时才按需加载。
+let mermaidLoader = null
+function loadMermaid() {
+  if (!mermaidLoader) {
+    mermaidLoader = import('mermaid')
+      .then((mod) => {
+        const mermaid = mod.default || mod
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: 'dark',
+          securityLevel: 'strict',
+          fontFamily: "'Inter', 'Noto Sans SC', system-ui, sans-serif",
+          themeVariables: {
+            background: '#11151b',
+            primaryColor: '#1c2532',
+            primaryTextColor: '#dbe3ee',
+            primaryBorderColor: '#334155',
+            lineColor: '#7c8ca1',
+            secondaryColor: '#1a2331',
+            tertiaryColor: '#141b24',
+          },
+        })
+        return mermaid
+      })
+      .catch((err) => {
+        mermaidLoader = null
+        throw err
+      })
+  }
+  return mermaidLoader
+}
 
 // ---------------------------------------------------------------- rendering
 
@@ -113,6 +129,8 @@ const PURIFY_CONFIG = {
  */
 async function renderMermaid(host) {
   const nodes = [...host.querySelectorAll('.mermaid')]
+  if (!nodes.length) return
+  const mermaid = await loadMermaid()
   for (const node of nodes) {
     const source = node.textContent || ''
     if (!source.trim()) continue
