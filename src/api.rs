@@ -12,8 +12,10 @@ use axum::{
     routing::{get, patch, post},
 };
 use serde_json::json;
+use axum::http::{HeaderName, HeaderValue, header};
 use tower_http::{
     services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 
@@ -50,7 +52,43 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(serve)
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
+        .layer(security_headers())
         .with_state(state)
+}
+
+/// 基础安全响应头。注意这里没有加 CSP：前端要跑 Monaco 的 blob worker、
+/// KaTeX / Mermaid 注入内联样式，收紧 CSP 需要逐项放行，demo 阶段先保证不被破坏。
+fn security_headers() -> tower::layer::util::Stack<
+    SetResponseHeaderLayer<HeaderValue>,
+    tower::layer::util::Stack<
+        SetResponseHeaderLayer<HeaderValue>,
+        tower::layer::util::Stack<
+            SetResponseHeaderLayer<HeaderValue>,
+            tower::layer::util::Stack<
+                SetResponseHeaderLayer<HeaderValue>,
+                tower::layer::util::Identity,
+            >,
+        >,
+    >,
+> {
+    tower::ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
+        .into_inner()
 }
 
 async fn health() -> Response {

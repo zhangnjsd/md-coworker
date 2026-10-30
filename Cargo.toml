@@ -2,7 +2,9 @@
 name = "md-coworker"
 version = "0.1.0"
 edition = "2024"
-description = "Real-time collaborative Markdown workspace built on Axum"
+description = "Real-time collaborative Markdown workspace built on Axum + Yjs CRDT"
+license = "MIT"
+rust-version = "1.85"
 
 [dependencies]
 # --- web framework ---
@@ -43,3 +45,4 @@ futures-util = "0.3.34"
 
 [profile.release]
 opt-level = 2
+strip = "debuginfo"

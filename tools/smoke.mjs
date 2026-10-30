@@ -9,6 +9,8 @@ import * as Y from 'yjs';
 const BASE = process.env.MC_BASE || process.argv[2] || 'http://127.0.0.1:3000';
 const KEY_FILE = process.argv[3] || 'data/bootstrap-admin.key';
 const WS_BASE = BASE.replace(/^http/, 'ws');
+// 被测试的工作区目录（用来校验"编辑是否真的落盘"）
+const WS_ROOT = process.env.MC_WS_ROOT || 'demo-workspace';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -250,7 +252,7 @@ async function main() {
   const saved = await c1.waitFor((m) => m.t === 'saved', 6000);
   check('收到 saved 帧', !!saved.path);
   await sleep(400);
-  const onDisk = fs.readFileSync(`demo-workspace/${fsPath}`, 'utf8');
+  const onDisk = fs.readFileSync(`${WS_ROOT}/${fsPath}`, 'utf8');
   check('编辑已实时写入磁盘', onDisk.includes('来自 alice 的一行') && onDisk.includes('bob 说：你好'), JSON.stringify(onDisk.slice(0, 60)));
 
   console.log('\n=== 7. 重连后状态保持（快照） ===');
