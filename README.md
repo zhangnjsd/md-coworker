@@ -13,6 +13,10 @@ Axum (0.8) ── yrs 文档房间 ── 400ms 防抖落盘 ──▶ 工作区
         └── rusqlite（用户 / 会话 / 2FA 种子，敏感字段 AES-256-GCM 加密）
 ```
 
+![登录](docs/screenshots/login.png)
+
+![编辑与预览](docs/screenshots/editor.png)
+
 ## 快速开始
 
 ```bash
@@ -89,6 +93,12 @@ master.key (64B / 512bit, 128 hex 字符)
 
 也就是说，密钥材料的强度是 512 bit，实际分组算法是 AEAD 的 AES-256-GCM（提供机密性 + 完整性）。
 这是标准允许的、且更安全的组合；如需换成 AES-256-CBC 或加倍密钥长度，只需改 `src/crypto.rs`。
+
+## 界面
+
+| 登录 | 工作区 | 管理后台 |
+| --- | --- | --- |
+| ![登录](docs/screenshots/login.png) | ![工作区](docs/screenshots/editor.png) | ![后台](docs/screenshots/admin.png) |
 
 ## 项目结构
 
