@@ -36,6 +36,31 @@ try {
   console.warn('[preview] katex plugin failed to load', err)
 }
 
+// Task lists: `- [ ]` / `- [x]` become a disabled checkbox. markdown-it ships no
+// plugin for this and pulling one in for 12 lines would be silly.
+function taskListRule(state) {
+  const tokens = state.tokens
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].type !== 'inline') continue
+    const children = tokens[i].children || []
+    const first = children[0]
+    if (!first || first.type !== 'text') continue
+    const match = /^\[([ xX])\]\s+/.exec(first.content)
+    if (!match) continue
+    let li = i - 1
+    while (li >= 0 && tokens[li].type !== 'list_item_open') li--
+    if (li < 0) continue
+    first.content = first.content.slice(match[0].length)
+    const box = new state.Token('html_inline', '', 0)
+    box.content = `<input class="task-box" type="checkbox" disabled${
+      match[1].toLowerCase() === 'x' ? ' checked' : ''
+    }> `
+    children.unshift(box)
+    tokens[li].attrJoin('class', 'task-item')
+  }
+}
+md.core.ruler.push('task_lists', taskListRule)
+
 let mermaidCounter = 0
 
 // Mermaid is ~2.7MB, so load it on demand only when ```mermaid really appears in a document.

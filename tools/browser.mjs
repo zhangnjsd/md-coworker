@@ -170,6 +170,14 @@ async function main() {
   await pageA.keyboard.press('End');
   await pageA.keyboard.up('Control');
   await pageA.keyboard.type(` ${marker}`);
+  // CodeMirror renders only the viewport, so bring B's view to the end of the
+  // document before asserting that the text arrived.
+  await pageB.bringToFront();
+  await pageB.click('.cm-content');
+  await pageB.keyboard.down('Control');
+  await pageB.keyboard.press('End');
+  await pageB.keyboard.up('Control');
+  await sleep(300);
   const synced = await pageB
     .waitForFunction((m) => document.querySelector('.cm-content')?.innerText.includes(m), { timeout: 10000 }, marker)
     .then(() => true)

@@ -678,13 +678,12 @@
 /* ------------------------------------------------------- 2FA setup figures */
 
 .qr-panel {
+  /* Not a card inside a card: the white QR is the only raised object, everything
+   * else stays on the dialog surface. */
   display: grid;
   grid-template-columns: 188px minmax(0, 1fr);
-  gap: var(--sp-4);
-  padding: var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg);
+  gap: var(--sp-5);
+  padding: var(--sp-2) 0 var(--sp-1);
 }
 
 .qr-side {

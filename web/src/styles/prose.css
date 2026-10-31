@@ -107,6 +107,41 @@
   margin: 0.3em 0;
 }
 
+/* Task lists (- [ ] / - [x]) render as a disabled box; the row is not a bullet. */
+.markdown-body li.task-item {
+  list-style: none;
+  margin-left: -1.2em;
+}
+
+.markdown-body .task-box {
+  appearance: none;
+  position: relative;
+  width: 14px;
+  height: 14px;
+  margin-right: 0.45em;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--bg-1);
+  vertical-align: -2px;
+}
+
+.markdown-body .task-box:checked {
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+}
+
+.markdown-body .task-box:checked::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 2px;
+  width: 5px;
+  height: 8px;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(38deg);
+}
+
 .markdown-body li::marker {
   color: var(--fg-3);
 }
