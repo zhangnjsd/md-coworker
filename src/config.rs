@@ -1,4 +1,5 @@
-//! 启动配置：工作区目录、数据目录、监听地址、主密钥。
+//! Startup configuration: workspace directory, data directory, bind address and the
+//! master key.
 
 use anyhow::{Context, Result, bail};
 use rand::RngCore;
@@ -71,15 +72,17 @@ impl Config {
             }
         }
 
-        let workspace = workspace.context("必须把工作区目录作为第一个参数\n\n补一个: md-coworker ./workspace")?;
+        let workspace = workspace
+            .context("必须把工作区目录作为第一个参数\n\n补一个: md-coworker ./workspace")?;
         let workspace = std::fs::canonicalize(&workspace)
             .with_context(|| format!("工作区目录不存在或不可访问: {workspace}"))?;
 
         let data_dir = PathBuf::from(data_dir.unwrap_or_else(|| "data".into()));
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("无法创建数据目录 {}", data_dir.display()))?;
-        std::fs::create_dir_all(data_dir.join("crdt"))
-            .with_context(|| format!("无法创建 CRDT 快照目录 {}", data_dir.join("crdt").display()))?;
+        std::fs::create_dir_all(data_dir.join("crdt")).with_context(|| {
+            format!("无法创建 CRDT 快照目录 {}", data_dir.join("crdt").display())
+        })?;
         let data_dir = std::fs::canonicalize(&data_dir)?;
 
         let static_dir = PathBuf::from(static_dir.unwrap_or_else(|| "web/dist".into()));
@@ -118,7 +121,10 @@ fn load_or_create_master_key(data_dir: &Path) -> Result<Vec<u8>> {
         let bytes = hex_decode(raw.trim())
             .with_context(|| format!("主密钥格式非法（应为 128 位 hex）: {}", path.display()))?;
         if bytes.len() != 64 {
-            bail!("主密钥长度应为 64 字节（512 bit），实际 {} 字节", bytes.len());
+            bail!(
+                "主密钥长度应为 64 字节（512 bit），实际 {} 字节",
+                bytes.len()
+            );
         }
         return Ok(bytes);
     }

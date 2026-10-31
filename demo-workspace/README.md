@@ -17,7 +17,7 @@ $$
 graph TD
     A[浏览器] -->|WebSocket| B(Axum 服务端)
     B --> C[yrs CRDT 文档]
-    C --> D[实时落盘 .md 文件]
+    C --> D[实时 .md 文件]
 ```
 
 - 代码高亮：

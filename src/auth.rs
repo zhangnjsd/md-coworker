@@ -1,6 +1,8 @@
-//! 认证：Ed25519 挑战-响应登录 + 可选 TOTP 二次验证 + 账号自服务接口。
+//! Authentication: Ed25519 challenge-response login, optional TOTP second factor,
+//! session cookies, and the self-service account endpoints.
 //!
-//! 全程没有密码：服务端只存公钥，私钥在创建用户时一次性下发到前端。
+//! There are no passwords anywhere: the server only stores public keys, and a private
+//! key is handed to the client exactly once when a user is created or reset.
 
 use crate::{
     crypto::{self, Cipher},
@@ -38,9 +40,8 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = cookie_value(&parts.headers, COOKIE_NAME).ok_or_else(|| {
-            AppError::unauthorized("unauthorized", "未登录，请先使用密钥登录")
-        })?;
+        let token = cookie_value(&parts.headers, COOKIE_NAME)
+            .ok_or_else(|| AppError::unauthorized("unauthorized", "未登录，请先使用密钥登录"))?;
         let user = state
             .db
             .session_user(&token)
@@ -88,8 +89,10 @@ fn session_cookie(token: &str, ttl_secs: u64) -> HeaderValue {
 }
 
 fn clear_cookie() -> HeaderValue {
-    HeaderValue::from_str(&format!("{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"))
-        .expect("清理 Cookie 一定合法")
+    HeaderValue::from_str(&format!(
+        "{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    ))
+    .expect("清理 Cookie 一定合法")
 }
 
 fn login_response(state: &AppState, user: &UserRow) -> ApiResult<Response> {
@@ -199,7 +202,9 @@ pub async fn verify_mfa(
 pub async fn logout(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Response> {
     state.db.delete_session(&auth.token)?;
     let mut response = Json(json!({ "ok": true })).into_response();
-    response.headers_mut().insert(header::SET_COOKIE, clear_cookie());
+    response
+        .headers_mut()
+        .insert(header::SET_COOKIE, clear_cookie());
     Ok(response)
 }
 
@@ -222,10 +227,7 @@ pub async fn regenerate_own_keypair(
     })))
 }
 
-pub async fn totp_setup(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> ApiResult<Json<Value>> {
+pub async fn totp_setup(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Json<Value>> {
     if auth.user.totp_enabled {
         return Err(AppError::conflict(
             "totp_enabled",
@@ -238,9 +240,7 @@ pub async fn totp_setup(
         .cipher
         .seal(totp_aad(&auth.user.id).as_bytes(), &secret_raw)
         .context("加密 TOTP 种子失败")?;
-    state
-        .db
-        .set_totp(&auth.user.id, Some(sealed), false)?;
+    state.db.set_totp(&auth.user.id, Some(sealed), false)?;
 
     Ok(Json(json!({
         "secret": secret_b32,

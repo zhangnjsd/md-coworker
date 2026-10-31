@@ -1,4 +1,4 @@
-//! 共享的应用状态与对外 DTO。
+//! Shared application state and the DTOs exposed over the API.
 
 use crate::{collab::Hub, config::Config, crypto::Cipher, db::Db};
 use serde::Serialize;

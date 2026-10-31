@@ -1,22 +1,24 @@
-//! 实时协作层：文档房间（Yjs CRDT 权威副本）、在线状态、WebSocket 协议。
+//! Real-time collaboration layer: document rooms (authoritative Yjs CRDT copies),
+//! live presence, and the WebSocket protocol.
 //!
-//! * 每个打开的文件对应一个 [`Room`]，内含一份 `yrs::Doc`（Yjs 同构实现）。
-//! * 客户端推送的 Yjs 增量更新直接应用到房间文档，并转发给房间内其它连接。
-//! * 房间文档的文本每 400ms 落盘（实时保存），同时把加密快照写入 `data/crdt/`。
-//! * 全站在线状态（谁在线、在编辑哪个文件、光标在哪）通过 presence 帧广播。
+//! * Every open file maps to one [`Room`] holding a `yrs::Doc` (the Rust port of Yjs).
+//! * Incremental Yjs updates from a client are applied to the room document and then
+//!   fanned out to the other connections in that room.
+//! * Room text is flushed to disk every 400ms (continuous saving), and an encrypted
+//!   snapshot is written to `data/crdt/`.
+//! * Workspace-wide presence (who is online, which file they edit, where their cursor
+//!   is) is broadcast through presence frames.
 
 use crate::{
-    auth::AuthUser,
-    config::Config,
-    crypto::Cipher,
-    db::UserRow,
-    error::AppError,
-    files,
+    auth::AuthUser, config::Config, crypto::Cipher, db::UserRow, error::AppError, files,
     models::AppState,
 };
 use anyhow::{Context, Result};
 use axum::{
-    extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::{
+        State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     response::Response,
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
@@ -34,8 +36,7 @@ use std::{
 };
 use tokio::sync::{broadcast, mpsc};
 use yrs::{
-    Doc, GetString, ReadTxn, StateVector, Text, TextRef, Transact, Update,
-    updates::decoder::Decode,
+    Doc, GetString, ReadTxn, StateVector, Text, TextRef, Transact, Update, updates::decoder::Decode,
 };
 
 const ROOT_TEXT: &str = "content";
@@ -185,9 +186,8 @@ impl Hub {
         }
 
         let abs = files::resolve(&self.cfg.workspace, path)?;
-        let meta = std::fs::metadata(&abs).map_err(|_| {
-            AppError::not_found("file_not_found", format!("文件不存在: {path}"))
-        })?;
+        let meta = std::fs::metadata(&abs)
+            .map_err(|_| AppError::not_found("file_not_found", format!("文件不存在: {path}")))?;
         if !meta.is_file() {
             return Err(AppError::bad_request("not_a_file", "只能协作编辑文件"));
         }
@@ -261,10 +261,7 @@ impl Hub {
         });
 
         let mut rooms = self.rooms.lock().expect("rooms 锁被毒化");
-        Ok(rooms
-            .entry(path.to_string())
-            .or_insert(room)
-            .clone())
+        Ok(rooms.entry(path.to_string()).or_insert(room).clone())
     }
 
     pub fn room(&self, path: &str) -> Option<Arc<Room>> {
@@ -292,11 +289,7 @@ impl Hub {
 
     pub fn leave(&self, room: &Arc<Room>) -> usize {
         let previous = room.members.load(Ordering::Relaxed);
-        let count = if previous == 0 {
-            0
-        } else {
-            previous - 1
-        };
+        let count = if previous == 0 { 0 } else { previous - 1 };
         room.members.store(count, Ordering::Relaxed);
         let _ = self.tx.send(ServerMsg::Peers {
             path: room.path.clone(),
@@ -361,7 +354,10 @@ impl Hub {
         std::fs::rename(&tmp, &room.file)
             .with_context(|| format!("替换文件失败: {}", room.file.display()))?;
 
-        let state = room.doc.transact().encode_state_as_update_v1(&StateVector::default());
+        let state = room
+            .doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
         let sealed = self
             .cipher
             .seal(room.path.as_bytes(), &state)
@@ -417,10 +413,7 @@ impl Hub {
         if snapshot.exists() {
             let _ = std::fs::remove_file(snapshot);
         }
-        self.rooms
-            .lock()
-            .expect("rooms 锁被毒化")
-            .remove(path);
+        self.rooms.lock().expect("rooms 锁被毒化").remove(path);
     }
 
     // ------------------------------------------------------------ 在线状态
@@ -470,10 +463,7 @@ impl Hub {
     }
 
     pub fn presence_remove(&self, conn: u64) {
-        self.agents
-            .lock()
-            .expect("agents 锁被毒化")
-            .remove(&conn);
+        self.agents.lock().expect("agents 锁被毒化").remove(&conn);
     }
 
     pub fn online_user_ids(&self) -> HashSet<String> {
@@ -725,7 +715,9 @@ async fn handle_client_msg(
             let room = hub
                 .room(&path)
                 .ok_or_else(|| format!("文档房间不存在: {path}"))?;
-            let bytes = B64.decode(&update_b64).map_err(|err| format!("base64 解码失败: {err}"))?;
+            let bytes = B64
+                .decode(&update_b64)
+                .map_err(|err| format!("base64 解码失败: {err}"))?;
             hub.apply_update(&room, &bytes)
                 .map_err(|err| format!("应用更新失败: {err:#}"))?;
             let _ = hub.tx.send(ServerMsg::Update {
@@ -743,7 +735,9 @@ async fn handle_client_msg(
             if !joined.contains(&path) {
                 return Ok(());
             }
-            let bytes = B64.decode(&update_b64).map_err(|err| format!("base64 解码失败: {err}"))?;
+            let bytes = B64
+                .decode(&update_b64)
+                .map_err(|err| format!("base64 解码失败: {err}"))?;
             let _ = hub.tx.send(ServerMsg::Awareness {
                 path,
                 update: bytes,
@@ -769,16 +763,9 @@ async fn handle_client_msg(
     Ok(())
 }
 
-fn encode_event(
-    msg: &ServerMsg,
-    self_conn: u64,
-    joined: &HashSet<String>,
-) -> Option<String> {
+fn encode_event(msg: &ServerMsg, self_conn: u64, joined: &HashSet<String>) -> Option<String> {
     match msg {
-        ServerMsg::Presence(users) => Some(
-            json!({ "t": "presence", "users": users })
-                .to_string(),
-        ),
+        ServerMsg::Presence(users) => Some(json!({ "t": "presence", "users": users }).to_string()),
         ServerMsg::Update {
             path,
             update,

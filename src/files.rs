@@ -1,7 +1,8 @@
-//! 工作区文件系统：安全路径解析、目录树、增删改查。
+//! Workspace filesystem: safe path resolution, directory tree and CRUD.
 //!
-//! 所有对外路径都是相对工作区根目录的 POSIX 路径，且必须是"正常"组件：
-//! 拒绝绝对路径、`..`、空段，确保不会逃出工作区。
+//! Every path crossing the API is a POSIX path relative to the workspace root and must
+//! consist of "normal" components only: absolute paths, `..` and empty segments are
+//! rejected, so nothing can escape the workspace.
 
 use crate::{
     auth::AuthUser,
@@ -40,7 +41,12 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
     for component in candidate.components() {
         match component {
             Component::Normal(_) => {}
-            _ => return Err(AppError::bad_request("bad_path", "路径不能包含上级目录或根组件")),
+            _ => {
+                return Err(AppError::bad_request(
+                    "bad_path",
+                    "路径不能包含上级目录或根组件",
+                ));
+            }
         }
     }
     Ok(root.join(candidate))
@@ -181,10 +187,7 @@ pub struct FileQuery {
     path: Option<String>,
 }
 
-pub async fn list_files(
-    State(state): State<AppState>,
-    _auth: AuthUser,
-) -> ApiResult<Json<Value>> {
+pub async fn list_files(State(state): State<AppState>, _auth: AuthUser) -> ApiResult<Json<Value>> {
     let root = state.cfg.workspace.clone();
     let tree = build_tree(&root, &root, "")?;
     Ok(Json(json!({

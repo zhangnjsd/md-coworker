@@ -1,9 +1,7 @@
-//! HTTP 路由装配。
+//! HTTP route wiring, including static frontend delivery.
 
-use crate::{
-    admin, auth, collab, files,
-    models::AppState,
-};
+use crate::{admin, auth, collab, files, models::AppState};
+use axum::http::{HeaderName, HeaderValue, header};
 use axum::{
     Json, Router,
     extract::DefaultBodyLimit,
@@ -12,7 +10,6 @@ use axum::{
     routing::{get, patch, post},
 };
 use serde_json::json;
-use axum::http::{HeaderName, HeaderValue, header};
 use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
@@ -33,8 +30,14 @@ pub fn router(state: AppState) -> Router {
         .route("/me/2fa/enable", post(auth::totp_enable))
         .route("/me/2fa/disable", post(auth::totp_disable))
         // --- 管理员 ---
-        .route("/admin/users", get(admin::list_users).post(admin::create_user))
-        .route("/admin/users/{id}", patch(admin::patch_user).delete(admin::delete_user))
+        .route(
+            "/admin/users",
+            get(admin::list_users).post(admin::create_user),
+        )
+        .route(
+            "/admin/users/{id}",
+            patch(admin::patch_user).delete(admin::delete_user),
+        )
         .route("/admin/users/{id}/keypair", post(admin::reset_keypair))
         // --- 文件 ---
         .route("/files", get(files::list_files).post(files::create_entry))

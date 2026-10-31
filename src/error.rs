@@ -1,8 +1,9 @@
-//! 统一错误处理。
+//! Unified error handling.
 //!
-//! 内部错误一律用 [`anyhow`] 承载（保留完整 context 链），在 HTTP 边界由
-//! [`AppError`] 转成 `{"error":{"code","message"}}` 响应；5xx 会把整条 context
-//! 链写进日志，但绝不把内部细节回传给客户端。
+//! Internal errors are carried by [`anyhow`] (keeping the full context chain) and are
+//! converted at the HTTP boundary by [`AppError`] into `{"error":{"code","message"}}`.
+//! For 5xx responses the whole context chain goes to the log, but internal details are
+//! never sent back to the client.
 
 use axum::{
     Json,
@@ -79,7 +80,13 @@ impl AppError {
 
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({}): {}", self.status.as_u16(), self.code, self.message)
+        write!(
+            f,
+            "{} ({}): {}",
+            self.status.as_u16(),
+            self.code,
+            self.message
+        )
     }
 }
 

@@ -1,22 +1,26 @@
-//! 密码学原语。
+//! Cryptographic primitives.
 //!
-//! ## 关于需求中的 "AES 512"
+//! ## About the requested "AES 512"
 //!
-//! AES 标准只有 128 / 192 / 256 位密钥，**不存在 AES-512**。本项目按"尽可能强、
-//! 且 512 bit 密钥材料"的含义落地为：
+//! AES is only defined for 128 / 192 / 256-bit keys; **AES-512 does not exist**. This
+//! project reads the requirement as "as strong as possible, with 512-bit key material"
+//! and implements it as:
 //!
-//! * 主密钥：512 bit（64 字节）随机材料，独立文件 `data/master.key`，权限 0600；
-//! * 数据密钥派生：HKDF-SHA512（512 bit 输出的 PRK 扩展），从中截取 256 bit
-//!   作为 AES-256-GCM 的内容加密密钥；
-//! * 完整性：GCM 模式自带 128 bit 认证标签，任何篡改都会解密失败。
+//! * Master key: 512-bit (64-byte) random material in `data/master.key`, mode 0600.
+//! * Data key derivation: HKDF-SHA512 (512-bit PRK expansion), from which 256 bits are
+//!   taken as the AES-256-GCM content-encryption key.
+//! * Integrity: GCM brings a built-in 128-bit authentication tag, so any tampering
+//!   fails decryption.
 //!
-//! 这样既符合"512 位熵 + SHA-512 派生"的意图，又保持标准 AES 实现（`aes-gcm`
-//! 为 RustCrypto 审计实现）。所有落盘的敏感数据（TOTP 种子、CRDT 快照）都用它加密。
+//! This keeps the intent (512-bit entropy + SHA-512 derivation) while staying with a
+//! standard AES implementation (`aes-gcm` from RustCrypto). All sensitive data written
+//! to disk (TOTP seeds, CRDT snapshots) is encrypted with it.
 //!
-//! ## 身份认证
+//! ## Authentication
 //!
-//! 用户使用 Ed25519 密钥对做挑战-响应登录，口令永远不上送：服务端只保存公钥，
-//! 私钥只在创建/重置用户时一次性下发。
+//! Users log in with an Ed25519 key pair via challenge-response, so no secret is ever
+//! sent over the wire. The server stores only public keys, and private keys are handed
+//! out once when a user is created or reset.
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -107,13 +111,7 @@ impl Cipher {
         let (nonce, body) = blob.split_at(12);
         let cipher = Aes256Gcm::new_from_slice(&self.key).context("初始化 AES-256-GCM 失败")?;
         cipher
-            .decrypt(
-                Nonce::from_slice(nonce),
-                Payload {
-                    msg: body,
-                    aad,
-                },
-            )
+            .decrypt(Nonce::from_slice(nonce), Payload { msg: body, aad })
             .map_err(|_| anyhow!("AES-256-GCM 解密或完整性校验失败"))
     }
 
@@ -154,7 +152,9 @@ pub fn generate_keypair() -> (String, String) {
 }
 
 pub fn verifying_key_from_b64(public_key_b64: &str) -> Result<VerifyingKey> {
-    let raw = B64.decode(public_key_b64.trim()).context("公钥 base64 非法")?;
+    let raw = B64
+        .decode(public_key_b64.trim())
+        .context("公钥 base64 非法")?;
     let bytes: [u8; 32] = raw
         .as_slice()
         .try_into()
@@ -225,7 +225,8 @@ pub fn base32_decode(text: &str) -> Result<Vec<u8>> {
         let value = BASE32_ALPHABET
             .iter()
             .position(|c| *c == byte)
-            .ok_or_else(|| anyhow!("非法 base32 字符: {}", byte as char))? as u32;
+            .ok_or_else(|| anyhow!("非法 base32 字符: {}", byte as char))?
+            as u32;
         buffer = (buffer << 5) | value;
         bits += 5;
         if bits >= 8 {

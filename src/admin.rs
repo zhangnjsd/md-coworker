@@ -1,4 +1,5 @@
-//! 管理员接口：创建用户（一次性下发密钥对）、重置密钥对、调整角色、强制重置 2FA、删除用户。
+//! Admin endpoints: create a user (with a one-time key pair), reset a key pair,
+//! change a role, force-disable 2FA, and delete a user.
 
 use crate::{
     auth::{AdminUser, parse_role, validate_username},

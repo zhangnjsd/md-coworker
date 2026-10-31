@@ -1,7 +1,8 @@
-//! SQLite 持久层：用户、会话、登录挑战、2FA 票据。
+//! SQLite persistence: users, sessions, login challenges and 2FA tickets.
 //!
-//! 用 `rusqlite`（bundled SQLite）同步 API，外面套 `Mutex<Connection>`。
-//! 单机小团队场景下这些查询都是微秒级，不引入连接池。
+//! `rusqlite` (bundled SQLite) is used through its synchronous API behind a
+//! `Mutex<Connection>`. For a single-node, small-team deployment these queries take
+//! microseconds, so no connection pool is introduced.
 
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -282,7 +283,10 @@ impl Db {
             params![id, user_id, nonce, now_ms() + ttl_secs * 1000],
         )?;
         // 顺手清理过期挑战
-        conn.execute("DELETE FROM challenges WHERE expires_at <= ?1", params![now_ms()])?;
+        conn.execute(
+            "DELETE FROM challenges WHERE expires_at <= ?1",
+            params![now_ms()],
+        )?;
         Ok(id)
     }
 
@@ -344,8 +348,14 @@ impl Db {
         let conn = self.conn();
         let now = now_ms();
         conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
-        conn.execute("DELETE FROM challenges WHERE expires_at <= ?1", params![now])?;
-        conn.execute("DELETE FROM mfa_tickets WHERE expires_at <= ?1", params![now])?;
+        conn.execute(
+            "DELETE FROM challenges WHERE expires_at <= ?1",
+            params![now],
+        )?;
+        conn.execute(
+            "DELETE FROM mfa_tickets WHERE expires_at <= ?1",
+            params![now],
+        )?;
         Ok(())
     }
 }

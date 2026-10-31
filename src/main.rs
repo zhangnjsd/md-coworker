@@ -1,6 +1,6 @@
-//! md-coworker —— 基于 Axum 的实时协作 Markdown 工作区。
+//! md-coworker — a real-time collaborative Markdown workspace built on Axum.
 //!
-//! 启动：`md-coworker <工作区目录>`（第一个参数即工作区，见 [`config::USAGE`]）。
+//! Usage: `md-coworker <workspace-dir>` (the first argument is the workspace root).
 
 mod admin;
 mod api;
@@ -88,9 +88,8 @@ async fn main() -> Result<()> {
 }
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_env("MC_LOG").unwrap_or_else(|_| {
-        EnvFilter::new("md_coworker=info,tower_http=warn,axum=warn")
-    });
+    let filter = EnvFilter::try_from_env("MC_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("md_coworker=info,tower_http=warn,axum=warn"));
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer().with_target(false))
@@ -106,9 +105,8 @@ fn bootstrap_admin(db: &Db, cfg: &Config) -> Result<()> {
     let user = db.create_user("admin", db::Role::Admin, &public_key)?;
 
     let key_file = cfg.data_dir.join("bootstrap-admin.key");
-    std::fs::write(&key_file, &private_key).with_context(|| {
-        format!("写入管理员初始私钥失败: {}", key_file.display())
-    })?;
+    std::fs::write(&key_file, &private_key)
+        .with_context(|| format!("写入管理员初始私钥失败: {}", key_file.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
