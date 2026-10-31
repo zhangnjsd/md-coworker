@@ -189,7 +189,9 @@ async function main() {
     .catch(() => false);
   check('协作者面板列出两个在线用户', peers);
   const peerInfo = await pageB.evaluate(() => document.querySelector('.collab-list')?.innerText || '');
-  check('协作者面板显示文件与行号', /README\.md/.test(peerInfo) && /\d+:\d+/.test(peerInfo), JSON.stringify(peerInfo));
+  // The panel prints the caret as "行 12, 列 4" (older builds used "12:4").
+  const caretShape = /(\d+\s*:\s*\d+|行\s*\d+,\s*列\s*\d+)/;
+  check('协作者面板显示文件与行号', /README\.md/.test(peerInfo) && caretShape.test(peerInfo), JSON.stringify(peerInfo));
   const treeMark = await pageB
     .waitForFunction(
       () => !!document.querySelector('.tree-row[data-path="README.md"] .tree-presence-dot'),
@@ -227,11 +229,25 @@ async function main() {
   const textB = await cmText(pageB);
   check('B 端内容与 A 端一致', !!textB && textB.includes(bobMarker) && !textB.includes(marker));
 
-  console.log('\n=== 7. 实时落盘 ===');
+  console.log('\n=== 7. 实时保存 ===');
   await sleep(1200);
   const onDisk = fs.readFileSync(process.env.MC_WS_FILE || '/tmp/ws-browser/README.md', 'utf8');
   check('磁盘文件包含 B 的编辑', onDisk.includes(bobMarker));
   check('磁盘文件不再包含 A 被撤销的编辑', !onDisk.includes(marker));
+
+  console.log('\n=== 7b. 收尾：B 撤回自己的编辑，工作区回到原样 ===');
+  await pageB.bringToFront();
+  await pageB.click('.cm-content');
+  await pageB.keyboard.down('Control');
+  await pageB.keyboard.press('KeyZ');
+  await pageB.keyboard.up('Control');
+  await sleep(1400);
+  const cleaned = fs.readFileSync(process.env.MC_WS_FILE || '/tmp/ws-browser/README.md', 'utf8');
+  check(
+    '双方撤回后磁盘不再包含测试标记',
+    !cleaned.includes(bobMarker) && !cleaned.includes(marker),
+    cleaned.slice(-80),
+  );
 
   console.log('\n=== 8. 代码文件用 Monaco 打开 ===');
   await openFile(pageA, 'notes/code-sample.rs');

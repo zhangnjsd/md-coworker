@@ -3,20 +3,27 @@ import nacl from 'tweetnacl'
 import { api, loadStoredKey, storeKey } from '../net/api.js'
 import { b64ToBytes, bytesToB64, parseSeed } from '../util/b64.js'
 import { button, el, svgIcon } from '../util/dom.js'
-import { toastError, toastSuccess } from '../ui/toast.js'
+import { toastSuccess } from '../ui/toast.js'
 
 const FRIENDLY_ERRORS = {
-  bad_signature: '签名校验失败：该私钥与用户名不匹配，请确认密钥文件是否正确。',
-  unknown_user: '用户不存在，请核对用户名（管理员创建用户时会下发私钥）。',
-  bad_totp: '验证码错误或已过期，请重新输入当前 6 位验证码。',
-  unauthorized: '登录状态已失效，请重新登录。',
-  network_error: '无法连接服务端，请确认后端服务已启动。',
+  bad_signature: '密钥与该用户不匹配，请粘贴完整私钥（44 字符）或重新选择 .key 文件',
+  unknown_user: '用户不存在，请核对用户名或向管理员索取该账号的私钥文件',
+  bad_totp: '验证码错误或已过期，请重新输入当前 6 位验证码',
+  unauthorized: '登录状态已失效，请重新登录',
+  network_error: '无法连接服务端，请确认后端服务已启动',
 }
 
+const CAPABILITIES = [
+  ['Ed25519', '密钥登录，可选 TOTP 二次验证'],
+  ['CodeMirror · Monaco', '双引擎，Markdown 与源码同屏协作'],
+  ['CRDT', '按文件隔离的房间，切换文件互不干扰'],
+  ['KaTeX · Mermaid', '公式、图表与代码高亮开箱可用'],
+]
+
 function friendlyMessage(err) {
-  if (!err) return '登录失败'
+  if (!err) return '登录失败，请重试'
   if (err.code && FRIENDLY_ERRORS[err.code]) return FRIENDLY_ERRORS[err.code]
-  return err.message || '登录失败'
+  return err.message || '登录失败，请重试'
 }
 
 /**
@@ -31,39 +38,74 @@ export function mountLogin(host, opts) {
   host.innerHTML = ''
   host.className = 'view view-login'
 
-  const errorBox = el('div', { class: 'login-error', style: 'display:none' })
+  // ---------------------------------------------------------------- fields
+
+  const errorBox = el('div', { class: 'login-error', attrs: { role: 'alert' }, style: { display: 'none' } })
+
   const usernameInput = el('input', {
     class: 'input mono',
-    attrs: { type: 'text', placeholder: '例如 alice', autocomplete: 'username', spellcheck: 'false' },
+    attrs: {
+      type: 'text',
+      id: 'login-username',
+      name: 'username',
+      placeholder: '例如 alice',
+      autocomplete: 'username',
+      spellcheck: 'false',
+    },
     on: {
       input: () => {
-        errorBox.style.display = 'none'
+        hideError()
         const stored = loadStoredKey(usernameInput.value)
         if (stored && keyInput.value !== stored) keyInput.value = stored
       },
     },
   })
+
   const keyInput = el('textarea', {
-    class: 'input mono key-input',
-    attrs: { rows: '2', placeholder: '粘贴 base64 私钥（44 字符），或拖入 .key 文件', spellcheck: 'false' },
+    class: 'input key-input',
+    attrs: {
+      id: 'login-key',
+      name: 'private-key',
+      rows: '2',
+      placeholder: '粘贴 base64 私钥（44 字符），或把 .key 文件拖到下方',
+      spellcheck: 'false',
+      autocomplete: 'off',
+    },
     on: {
-      input: () => {
-        errorBox.style.display = 'none'
-      },
+      input: () => hideError(),
     },
   })
+
   const keyFileInput = el('input', {
     class: 'hidden-file',
-    attrs: { type: 'file', accept: '.key,.txt,text/plain' },
+    attrs: { type: 'file', accept: '.key,.txt,text/plain', 'aria-label': '选择密钥文件' },
     on: { change: () => readKeyFile(keyFileInput.files && keyFileInput.files[0]) },
   })
 
-  const submitBtn = button('登录', 'primary', () => submit())
+  const submitBtn = button('用密钥登录', 'primary', () => submit())
   submitBtn.classList.add('login-submit')
+  submitBtn.type = 'submit'
+  submitBtn.disabled = true
+  submitBtn.title = '填写用户名与私钥后即可登录'
+
+  function refreshSubmitState() {
+    const ready = Boolean(usernameInput.value.trim() && keyInput.value.trim())
+    if (busy) return
+    submitBtn.disabled = !ready
+    submitBtn.title = ready ? '' : '填写用户名与私钥后即可登录'
+  }
 
   function showError(message) {
     errorBox.textContent = message
-    errorBox.style.display = 'block'
+    errorBox.style.display = ''
+  }
+
+  function hideError() {
+    if (errorBox.style.display !== 'none') {
+      errorBox.style.display = 'none'
+      errorBox.textContent = ''
+    }
+    refreshSubmitState()
   }
 
   async function readKeyFile(file) {
@@ -71,16 +113,12 @@ export function mountLogin(host, opts) {
     try {
       const text = await file.text()
       keyInput.value = text.trim()
-      // Common key files are named after the user, use it as a hint.
+      // Key files are named after the user, so use the name as a hint.
       const base = (file.name || '').replace(/\.(key|txt)$/i, '').trim()
       if (base && !usernameInput.value) usernameInput.value = base
-      if (base) {
-        const stored = loadStoredKey(base)
-        if (!keyInput.value && stored) keyInput.value = stored
-      }
-      errorBox.style.display = 'none'
+      hideError()
     } catch (err) {
-      showError(`读取密钥文件失败：${err.message || err}`)
+      showError(`读取密钥文件失败：${err.message || err}。请改用粘贴方式导入私钥`)
     }
   }
 
@@ -104,11 +142,11 @@ export function mountLogin(host, opts) {
     },
     el(
       'button',
-      { class: 'btn btn-ghost btn-sm', attrs: { type: 'button' }, on: { click: () => keyFileInput.click() } },
-      svgIcon('key', 14),
+      { class: 'btn btn-sm', attrs: { type: 'button' }, on: { click: () => keyFileInput.click() } },
+      svgIcon('key', 13),
       el('span', { text: '选择密钥文件' }),
     ),
-    el('span', { class: 'key-file-hint', text: '也可直接拖入 .key / .txt 文件' }),
+    el('span', { class: 'key-file-hint', text: '也可直接拖入 .key / .txt' }),
     keyFileInput,
   )
 
@@ -118,17 +156,17 @@ export function mountLogin(host, opts) {
     const rawKey = keyInput.value.trim()
 
     if (!username) {
-      showError('请输入用户名。')
+      showError('请输入用户名，即管理员创建账号时使用的名字')
       usernameInput.focus()
       return
     }
     if (!/^[a-zA-Z0-9_-]{2,32}$/.test(username)) {
-      showError('用户名格式不正确：仅支持字母、数字、下划线和连字符，长度 2–32。')
+      showError('用户名只支持字母、数字、下划线和连字符，长度 2–32')
       usernameInput.focus()
       return
     }
     if (!rawKey) {
-      showError('请输入或拖入私钥（base64 编码的 32 字节 seed）。')
+      showError('请粘贴私钥（44 字符 base64），或选择 .key 文件')
       keyInput.focus()
       return
     }
@@ -137,7 +175,7 @@ export function mountLogin(host, opts) {
     try {
       seed = parseSeed(rawKey)
     } catch (err) {
-      showError(err.message || '私钥格式不正确')
+      showError(err.message || '私钥格式不正确，请粘贴完整的 44 字符私钥')
       keyInput.focus()
       return
     }
@@ -148,7 +186,7 @@ export function mountLogin(host, opts) {
     try {
       const challenge = await api.challenge(username)
       if (!challenge || !challenge.challenge_id || !challenge.nonce) {
-        throw new Error('服务端未返回有效挑战，请稍后重试。')
+        throw new Error('服务端未返回有效挑战，请重试登录')
       }
       const keyPair = nacl.sign.keyPair.fromSeed(seed)
       const signature = nacl.sign.detached(b64ToBytes(challenge.nonce), keyPair.secretKey)
@@ -165,15 +203,14 @@ export function mountLogin(host, opts) {
         onSuccess(result.user)
         return
       }
-      showError('登录响应异常，请稍后重试。')
+      showError('登录响应异常，请重试登录')
     } catch (err) {
-      const msg = friendlyMessage(err)
-      showError(msg)
+      showError(friendlyMessage(err))
     } finally {
       busy = false
       if (!destroyed) {
-        submitBtn.disabled = false
         submitBtn.classList.remove('is-busy')
+        refreshSubmitState()
       }
     }
   }
@@ -182,7 +219,7 @@ export function mountLogin(host, opts) {
 
   function showMfaStep(username, ticket, seedB64) {
     const codeInput = el('input', {
-      class: 'input totp-input mono',
+      class: 'input totp-input',
       attrs: {
         type: 'text',
         inputmode: 'numeric',
@@ -190,11 +227,13 @@ export function mountLogin(host, opts) {
         placeholder: '000000',
         autocomplete: 'one-time-code',
         spellcheck: 'false',
+        'aria-label': '6 位验证码',
       },
       on: {
         input: () => {
           codeInput.value = codeInput.value.replace(/\D/g, '').slice(0, 6)
           mfaError.style.display = 'none'
+          confirmBtn.disabled = codeInput.value.length !== 6
           if (codeInput.value.length === 6) confirmMfa()
         },
         keydown: (ev) => {
@@ -202,9 +241,11 @@ export function mountLogin(host, opts) {
         },
       },
     })
-    const mfaError = el('div', { class: 'login-error', style: 'display:none' })
-    const confirmBtn = button('验证并进入', 'primary', () => confirmMfa())
-    const backBtn = button('使用其他账号', 'ghost', () => {
+    const mfaError = el('div', { class: 'login-error', attrs: { role: 'alert' }, style: { display: 'none' } })
+    const confirmBtn = button('验证并登录', 'primary', () => confirmMfa())
+    confirmBtn.disabled = true
+    confirmBtn.title = '输入 6 位验证码后即可验证'
+    const backBtn = button('返回上一步', 'ghost', () => {
       mfaCard.remove()
       credentialsCard.style.display = ''
       usernameInput.focus()
@@ -215,12 +256,13 @@ export function mountLogin(host, opts) {
       if (mfaBusy) return
       const code = codeInput.value.trim()
       if (code.length !== 6) {
-        mfaError.textContent = '请输入 6 位验证码。'
-        mfaError.style.display = 'block'
+        mfaError.textContent = '请输入 6 位验证码'
+        mfaError.style.display = ''
         return
       }
       mfaBusy = true
       confirmBtn.disabled = true
+      confirmBtn.classList.add('is-busy')
       try {
         const result = await api.mfa(ticket, code)
         if (result && result.status === 'ok' && result.user) {
@@ -229,14 +271,17 @@ export function mountLogin(host, opts) {
           onSuccess(result.user)
           return
         }
-        mfaError.textContent = '验证失败，请重试。'
-        mfaError.style.display = 'block'
+        mfaError.textContent = '验证失败，请重新输入当前验证码'
+        mfaError.style.display = ''
       } catch (err) {
         mfaError.textContent = friendlyMessage(err)
-        mfaError.style.display = 'block'
+        mfaError.style.display = ''
       } finally {
         mfaBusy = false
-        confirmBtn.disabled = false
+        if (!destroyed) {
+          confirmBtn.classList.remove('is-busy')
+          confirmBtn.disabled = codeInput.value.trim().length !== 6
+        }
       }
     }
 
@@ -246,7 +291,7 @@ export function mountLogin(host, opts) {
       el('div', { class: 'mfa-title', text: '两步验证' }),
       el('div', {
         class: 'mfa-sub',
-        text: `账号 ${username} 已启用 2FA，请输入身份验证器中的 6 位验证码。`,
+        text: `账号 ${username} 已开启 2FA，请输入身份验证器中的 6 位验证码。`,
       }),
       codeInput,
       mfaError,
@@ -254,56 +299,87 @@ export function mountLogin(host, opts) {
     )
 
     credentialsCard.style.display = 'none'
-    credentialsCard.after(mfaCard)
+    stack.appendChild(mfaCard)
     codeInput.focus()
   }
 
-  // ------------------------------------------------------------ structure
+  // ------------------------------------------------------------- structure
 
   const credentialsCard = el(
     'div',
     { class: 'login-card' },
-    el('div', { class: 'login-card-head' },
-      el('div', { class: 'login-brand' },
+    el(
+      'div',
+      { class: 'login-card-head' },
+      el(
+        'div',
+        { class: 'login-brand' },
         el('div', { class: 'brand-mark', text: 'md' }),
-        el('div', {},
+        el(
+          'div',
+          {},
           el('div', { class: 'brand-name', text: 'md-coworker' }),
           el('div', { class: 'brand-sub', text: '实时协作 Markdown 工作区' }),
         ),
       ),
     ),
-    el('div', { class: 'login-body' },
-      el('label', { class: 'field' },
-        el('span', { class: 'field-label', text: '用户名' }),
+    el(
+      'form',
+      { class: 'login-body', attrs: { novalidate: '' }, on: { submit: (ev) => { ev.preventDefault(); submit() } } },
+      el(
+        'div',
+        { class: 'field' },
+        el('label', { class: 'field-label', text: '用户名', attrs: { for: 'login-username' } }),
         usernameInput,
       ),
-      el('label', { class: 'field' },
-        el('span', { class: 'field-label', text: '私钥（base64 seed）' }),
+      el(
+        'div',
+        { class: 'field' },
+        el('label', { class: 'field-label', text: '私钥（base64 seed）', attrs: { for: 'login-key' } }),
         keyInput,
       ),
       dropZone,
       errorBox,
       submitBtn,
     ),
-    el('div', { class: 'login-foot' },
+    el(
+      'div',
+      { class: 'login-foot' },
       svgIcon('lock', 13),
-      el('span', { text: '本系统仅支持密钥对登录，不提供密码。私钥只保存在本机浏览器中。' }),
+      el('span', {
+        class: 'login-foot-text',
+        text: '本系统只支持密钥登录，不提供密码。私钥只保存在本机浏览器中。',
+      }),
     ),
   )
 
-  const side = el('aside', { class: 'login-side' },
-    el('h1', { class: 'login-side-title', text: '多人同时编辑同一份 Markdown。' }),
-    el('p', { class: 'login-side-text', text: '基于 CRDT 的无冲突协同编辑，文件直接落盘到服务端工作区，无需手动保存。' }),
-    el('ul', { class: 'login-side-list' },
-      el('li', { text: 'Ed25519 密钥对登录，配合可选 TOTP 二次验证' }),
-      el('li', { text: 'CodeMirror / Monaco 双引擎，Markdown 与源码文件皆可协作' }),
-      el('li', { text: '按文件隔离的 Yjs 房间，切换文件不串味' }),
-      el('li', { text: 'KaTeX 数学公式、Mermaid 图表、代码高亮开箱可用' }),
+  const side = el(
+    'aside',
+    { class: 'login-side' },
+    el(
+      'h1',
+      { class: 'login-side-title' },
+      el('span', { text: '多人同时编辑同一份' }),
+      el('span', { text: 'Markdown。' }),
+    ),
+    el('p', {
+      class: 'login-side-text',
+      text: '基于 CRDT 的无冲突协同编辑：光标与选区实时同步，内容直接写回服务端工作区，不需要手动保存，也不会有版本冲突。',
+    }),
+    el(
+      'ul',
+      { class: 'login-side-list' },
+      CAPABILITIES.map(([term, text]) =>
+        el('li', {}, el('span', { class: 'mono', text: term }), el('span', { text: ` — ${text}` })),
+      ),
     ),
   )
 
-  const shell = el('div', { class: 'login-shell' }, side, credentialsCard)
-  host.append(shell)
+  const stack = el('div', { class: 'login-stack' }, credentialsCard)
+  host.append(el('div', { class: 'login-shell' }, side, stack))
+
+  usernameInput.addEventListener('input', refreshSubmitState)
+  keyInput.addEventListener('input', refreshSubmitState)
 
   // Prefill from the last successful login.
   try {
@@ -316,7 +392,7 @@ export function mountLogin(host, opts) {
   } catch {
     /* ignore */
   }
-
+  refreshSubmitState()
   ;(usernameInput.value ? keyInput : usernameInput).focus()
 
   return () => {

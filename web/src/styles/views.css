@@ -1,0 +1,717 @@
+/* Login, admin console, settings. Owned by the "views" pass — see docs/design.md.
+ *
+ * Layout language: one accent, hairline rules, mono meta, radius in three steps.
+ * Nothing here may hardcode a colour, size step, gap or easing: tokens only. */
+
+/* =================================================================== login */
+
+.view-login {
+  display: grid;
+  place-items: center;
+  padding: var(--sp-8) var(--sp-6);
+  background:
+    radial-gradient(
+      760px 460px at 16% -8%,
+      color-mix(in oklab, var(--accent) 8%, transparent),
+      transparent 72%
+    ),
+    var(--bg);
+}
+
+.login-shell {
+  display: grid;
+  grid-template-columns: 400px 420px;
+  gap: var(--sp-8);
+  align-items: center;
+}
+
+/* ---------------------------------------------------------- left narrative */
+
+.login-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.login-side-title {
+  max-width: 22ch;
+  font-family: var(--font-display);
+  font-size: var(--fs-3xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--fg);
+}
+
+.login-side-title span {
+  display: block;
+}
+
+.login-side-text {
+  max-width: 65ch;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+.login-side-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.login-side-list li {
+  position: relative;
+  padding-left: var(--sp-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+.login-side-list li::before {
+  content: '';
+  position: absolute;
+  top: var(--sp-1);
+  bottom: var(--sp-1);
+  left: 0;
+  width: 1px;
+  background: var(--line);
+}
+
+.login-side-list .mono {
+  color: var(--fg);
+}
+
+/* -------------------------------------------------------------- login card */
+
+.login-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-pop);
+}
+
+.login-card-head {
+  padding: var(--sp-5) var(--sp-5) 0;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.brand-name {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.brand-sub {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+}
+
+.login-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+}
+
+.login-submit {
+  height: 34px;
+  margin-top: var(--sp-1);
+  justify-content: center;
+}
+
+.key-input {
+  min-height: 64px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.02em;
+  word-break: break-all;
+}
+
+.key-file-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px dashed var(--line-soft);
+  border-radius: var(--r-sm);
+  background: transparent;
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out);
+}
+
+.key-file-row.dragging {
+  border-color: var(--accent-line);
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+
+.key-file-hint {
+  margin-left: auto;
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+  text-align: right;
+}
+
+.login-error {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+}
+
+.login-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--line-soft);
+  color: var(--fg-3);
+}
+
+.login-foot .ico {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+.login-foot-text {
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+}
+
+/* --------------------------------------------------------------- 2FA step */
+
+.mfa-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-pop);
+}
+
+.mfa-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  color: var(--fg);
+}
+
+.mfa-sub {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+.totp-input {
+  height: 44px;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  text-align: center;
+}
+
+.mfa-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.mfa-actions .btn-primary {
+  flex: 1 1 auto;
+}
+
+/* =================================================================== admin */
+
+.view-admin {
+  background: var(--bg);
+}
+
+.admin-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.admin-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex: 0 0 auto;
+  height: var(--topbar-h);
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.admin-topbar-left,
+.admin-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.admin-brand {
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.admin-topbar-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+}
+
+.admin-crumb {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+
+.admin-crumb.is-current {
+  color: var(--fg-2);
+}
+
+.admin-summary {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+}
+
+.admin-chip-name {
+  font-family: var(--font-mono);
+  color: var(--fg);
+}
+
+.admin-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 1280px;
+  margin-inline: auto;
+  /* Extra tail room so a short table never ends flush against the viewport. */
+  padding: var(--sp-6) var(--sp-6) var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.admin-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.admin-head-text {
+  min-width: 0;
+}
+
+.admin-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.admin-sub {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+/* One panel for the whole surface — no card inside a card. */
+.admin-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.admin-table-wrap {
+  overflow: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+
+.admin-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: var(--sp-6);
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.admin-table td {
+  height: 44px;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--fg-2);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.admin-table th:last-child,
+.admin-table td:last-child {
+  text-align: right;
+}
+
+.admin-table tbody tr {
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.admin-table tbody tr:hover {
+  background: var(--bg-2);
+}
+
+.admin-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-user {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.admin-user-name {
+  font-family: var(--font-mono);
+  color: var(--fg);
+}
+
+.admin-self-tag {
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+}
+
+.admin-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+
+.admin-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--fg-3);
+  flex: 0 0 auto;
+}
+
+.admin-status.is-online {
+  color: var(--fg);
+}
+
+.admin-status.is-online .admin-status-dot {
+  background: var(--accent);
+}
+
+.admin-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  /* Quiet by default, full contrast on hover/focus — never hidden. */
+  opacity: 0.55;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+/* Contrast comes from the text colour, not from transparency. */
+.admin-actions .btn {
+  color: var(--fg-2);
+}
+
+.admin-actions .btn-danger {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 30%, transparent);
+}
+
+.admin-table tbody tr:hover .admin-actions,
+.admin-table tbody tr:focus-within .admin-actions {
+  opacity: 1;
+}
+
+.admin-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Row states: skeleton / empty / error all live inside the table body. */
+.admin-table td.admin-state {
+  height: auto;
+  padding: var(--sp-7) var(--sp-4);
+  text-align: center;
+  white-space: normal;
+}
+
+/* Loading rows keep the grid rhythm but never react to the pointer. */
+.admin-table tbody tr.is-skeleton:hover {
+  background: transparent;
+}
+
+.admin-state-text {
+  max-width: 48ch;
+  margin-inline: auto;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+}
+
+.admin-state-error {
+  color: var(--danger);
+}
+
+.admin-state-actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+/* Create block sits inside the same panel, under the table. */
+.admin-create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+.admin-create-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.admin-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px auto;
+  gap: var(--sp-3);
+  align-items: end;
+}
+
+.admin-create-hint {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+}
+
+/* ================================================================ settings */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  /* The rule between sections gets --sp-4 above and below, so the rhythm is
+   * even and no stray space can pile up at the end of a section. */
+  gap: var(--sp-4);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: 0 0 var(--sp-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* Nothing inside a section may contribute its own vertical margin. */
+.settings-section > *,
+.kv-list,
+.kv {
+  margin-block: 0;
+}
+
+.settings-section:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.settings-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.settings-text {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+.settings-hint {
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+}
+
+.settings-slot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.inline-form .input {
+  max-width: 200px;
+}
+
+.settings-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.settings-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Danger zone: a left rule, not a box inside a dialog. The button and the
+ * sentence above it carry the weight. */
+.settings-danger {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 0 0 var(--sp-3);
+  border: 0;
+  border-left: 2px solid color-mix(in oklab, var(--danger) 45%, transparent);
+  background: transparent;
+}
+
+/* ------------------------------------------------------- 2FA setup figures */
+
+.qr-panel {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+
+.qr-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* The QR square must stay light to remain scannable. */
+.qr-canvas {
+  display: block;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: oklch(1 0 0);
+}
+
+.qr-hint {
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+  text-align: center;
+}
+
+.qr-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}

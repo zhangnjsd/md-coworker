@@ -4,25 +4,28 @@ import { CollabClient } from '../net/collab.js'
 import { FileTree } from '../ui/tree.js'
 import { confirmDialog, promptDialog } from '../ui/modal.js'
 import { toastError, toastInfo, toastSuccess, toastWarn } from '../ui/toast.js'
-import { button, countWords, el, fmtClock, iconButton, svgIcon } from '../util/dom.js'
-import { colorLight } from '../util/color.js'
+import { countWords, el, fmtClock } from '../util/dom.js'
 import { createMarkdownEditor } from '../editor/markdown.js'
 import { createPreview } from '../editor/preview.js'
 import { openSettings } from './settings.js'
 
 // Monaco (3.4MB) loads lazily only for non-Markdown files; first paint uses CodeMirror only.
 function isMarkdownPath(path) {
-  return /\.(md|markdown)$/i.test(String(path || ''))
+  return /\.(md|markdown)$/i.test(path || '')
 }
 
 const LS = {
   sidebar: 'mc.ui.sidebarCollapsed',
+  treeW: 'mc.ui.treeW',
   split: 'mc.ui.split',
   scrollSync: 'mc.ui.scrollSync',
 }
 
 const SPLIT_MIN = 0.22
 const SPLIT_MAX = 0.85
+const TREE_MIN = 200
+const TREE_MAX = 460
+const TREE_RAIL = 44
 
 function lsGet(key, fallback = null) {
   try {
@@ -41,10 +44,6 @@ function lsSet(key, value) {
   }
 }
 
-function joinPath(dir, name) {
-  return dir ? `${dir}/${name}` : name
-}
-
 function hasPath(nodes, path) {
   for (const node of nodes || []) {
     if (node.path === path) return true
@@ -56,6 +55,69 @@ function hasPath(nodes, path) {
 function parentPath(path) {
   const idx = String(path).lastIndexOf('/')
   return idx === -1 ? '' : path.slice(0, idx)
+}
+
+function baseName(path) {
+  const parts = String(path || '').split('/')
+  return parts[parts.length - 1] || ''
+}
+
+// ---------------------------------------------------------------- icon set
+// Stroke icons only: 1.5px, currentColor, aria-hidden. Shell chrome never
+// depends on an icon font or on per-file-type colour.
+
+const ICON_PATHS = {
+  settings:
+    '<path d="M2.6 5.4h10.8M2.6 10.6h10.8" /><circle cx="6.1" cy="5.4" r="1.6" /><circle cx="10.2" cy="10.6" r="1.6" />',
+  logout:
+    '<path d="M6.2 3.4H4.1c-.6 0-1.1.5-1.1 1.1v7c0 .6.5 1.1 1.1 1.1h2.1" /><path d="M9.3 5.4 11.9 8l-2.6 2.6" /><path d="M11.9 8H6.6" />',
+  shield:
+    '<path d="M8 2.2 3.6 3.9v3.4c0 2.3 1.7 4.4 4.4 5.6 2.7-1.2 4.4-3.3 4.4-5.6V3.9z" /><path d="M6.1 7.9l1.5 1.4 2.5-2.6" />',
+  users:
+    '<circle cx="6.2" cy="6" r="2.2" /><path d="M2.5 13.1c0-2 1.7-3.4 3.7-3.4s3.7 1.4 3.7 3.4" /><path d="M10.4 4.1a2 2 0 0 1 0 3.9M11.3 9.8c1.5.4 2.4 1.6 2.4 3.3" />',
+  plus: '<path d="M8 3.5v9M3.5 8h9" />',
+  'folder-plus':
+    '<path d="M2.25 5.4c0-.77.63-1.4 1.4-1.4h2.2c.42 0 .82.19 1.09.51l.71.85h5.9c.77 0 1.4.63 1.4 1.4v4.9c0 .77-.63 1.4-1.4 1.4H3.65c-.77 0-1.4-.63-1.4-1.4z" /><path d="M8 8.5v3M6.5 10h3" />',
+  refresh:
+    '<path d="M13.1 8A5.1 5.1 0 1 1 11.5 4.3" /><path d="M13.3 2.7v3.1h-3.1" />',
+  'panel-left':
+    '<rect x="2.4" y="3.1" width="11.2" height="9.8" rx="1.4" /><path d="M6.4 3.1v9.8" />',
+  doc: '<path d="M4 2.4h4.7L12 5.7v7.9H4z" /><path d="M8.7 2.4v3.3H12" /><path d="M5.9 8.7h4.2M5.9 10.8h4.2" />',
+}
+
+function icon(name, size = 14) {
+  return el('span', {
+    attrs: { 'aria-hidden': 'true' },
+    style: 'display:inline-flex',
+    html: `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${
+      ICON_PATHS[name] || ICON_PATHS.doc
+    }</svg>`,
+  })
+}
+
+function iconBtn(name, label, onClick, extraClass = '') {
+  return el(
+    'button',
+    {
+      class: `icon-btn${extraClass ? ` ${extraClass}` : ''}`,
+      attrs: { type: 'button', title: label, 'aria-label': label },
+      on: { click: onClick },
+    },
+    icon(name, 15),
+  )
+}
+
+function textBtn(name, label, onClick, extraClass = '') {
+  return el(
+    'button',
+    {
+      class: `btn btn-ghost btn-sm${extraClass ? ` ${extraClass}` : ''}`,
+      attrs: { type: 'button' },
+      on: { click: onClick },
+    },
+    icon(name, 14),
+    el('span', { text: label }),
+  )
 }
 
 /**
@@ -81,7 +143,10 @@ export function mountApp(host, opts) {
     online: 0,
     peers: 0,
     presence: [],
+    cursor: null,
+    seenPeers: new Set(),
     words: 0,
+    treeLoaded: false,
     destroyed: false,
   }
 
@@ -91,24 +156,27 @@ export function mountApp(host, opts) {
   // ------------------------------------------------------------------ DOM
 
   const breadcrumb = el('div', { class: 'breadcrumb' }, el('span', { class: 'crumb-empty', text: '未打开文件' }))
+
+  const connDot = el('span', { class: 'conn-dot' })
+  const connText = el('span', { class: 'conn-text', text: '连接中…' })
+  const connBadge = el('span', { class: 'conn-badge', attrs: { role: 'status' } }, connDot, connText)
+
   const saveDot = el('span', { class: 'save-dot' })
   const saveText = el('span', { class: 'save-text', text: '已保存' })
-  const connBadge = el('span', { class: 'conn-badge', text: '连接中…' })
-  const userDot = el('span', { class: 'dot', style: `background:${state.user.color || '#4f9cf9'}` })
-  const userChip = el(
-    'div',
-    { class: 'user-chip' },
-    userDot,
-    el('span', { class: 'user-name', text: state.user.username }),
-    el('span', { class: `badge badge-${state.user.role === 'admin' ? 'admin' : 'user'}`, text: state.user.role }),
-  )
+  const saveIndicator = el('span', { class: 'save-indicator', attrs: { role: 'status' } }, saveDot, saveText)
 
-  const settingsBtn = iconButton('settings', '设置', () => openSettingsDialog())
-  const adminBtn = button('管理员', 'ghost', () => onNavigateAdmin(), 'btn-sm')
-  adminBtn.prepend(svgIcon('shield', 14))
+  const userDot = el('span', { class: 'dot', style: `background:${state.user.color || 'var(--fg-3)'}` })
+  const userName = el('span', { class: 'user-name', text: state.user.username })
+  const userBadge = el('span', {
+    class: `badge badge-${state.user.role === 'admin' ? 'admin' : 'user'}`,
+    text: state.user.role,
+  })
+  const userChip = el('div', { class: 'user-chip' }, userDot, userName, userBadge)
+
+  const settingsBtn = iconBtn('settings', '打开设置', () => openSettingsDialog())
+  const adminBtn = textBtn('shield', '管理后台', () => onNavigateAdmin())
   if (state.user.role !== 'admin') adminBtn.style.display = 'none'
-  const logoutBtn = button('退出登录', 'ghost', () => doLogout(), 'btn-sm')
-  logoutBtn.prepend(svgIcon('logout', 14))
+  const logoutBtn = textBtn('logout', '退出登录', () => doLogout())
 
   const topbar = el(
     'header',
@@ -116,7 +184,7 @@ export function mountApp(host, opts) {
     el(
       'div',
       { class: 'topbar-left' },
-      el('div', { class: 'brand-wordmark', text: 'md-coworker' }),
+      el('span', { class: 'brand-wordmark', text: 'md-coworker' }),
       el('span', { class: 'topbar-sep' }),
       breadcrumb,
     ),
@@ -124,7 +192,7 @@ export function mountApp(host, opts) {
       'div',
       { class: 'topbar-right' },
       connBadge,
-      el('div', { class: 'save-indicator' }, saveDot, saveText),
+      saveIndicator,
       userChip,
       settingsBtn,
       adminBtn,
@@ -139,17 +207,28 @@ export function mountApp(host, opts) {
     onOpen: (path) => openFile(path),
     onRename: (node) => renameEntry(node.path),
     onDelete: (node) => deleteEntry(node.path),
+    onRetry: () => reloadTree(true),
   })
+  tree.setLoading(true)
 
-  const newFileBtn = iconButton('plus', '新建文件', () => createEntry('file'))
-  const newDirBtn = iconButton('folder', '新建目录', () => createEntry('dir'))
-  const refreshBtn = iconButton('refresh', '刷新文件列表', () => reloadTree(true))
-  const railButtons = el(
+  const newFileBtn = iconBtn('plus', '新建文件', () => createEntry('file'))
+  const newDirBtn = iconBtn('folder-plus', '新建文件夹', () => createEntry('dir'))
+  const refreshBtn = iconBtn('refresh', '刷新文件树', () => reloadTree(true))
+  const collapseBtn = iconBtn('panel-left', '收起文件树', () => toggleSidebar(), 'rail-toggle')
+  const expandBtn = iconBtn('panel-left', '展开文件树', () => toggleSidebar(), 'rail-toggle')
+
+  const sidebarRail = el(
     'div',
-    { class: 'rail-actions' },
-    iconButton('plus', '新建文件', () => createEntry('file')),
-    iconButton('refresh', '刷新', () => reloadTree(true)),
+    { class: 'sidebar-rail' },
+    expandBtn,
+    iconBtn('plus', '新建文件', () => createEntry('file')),
+    iconBtn('refresh', '刷新文件树', () => reloadTree(true)),
   )
+
+  const sidebarResizer = el('div', {
+    class: 'sidebar-resizer',
+    attrs: { role: 'separator', 'aria-orientation': 'vertical', 'aria-label': '调整文件树宽度', title: '拖拽调整文件树宽度' },
+  })
 
   const sidebar = el(
     'aside',
@@ -158,23 +237,12 @@ export function mountApp(host, opts) {
       'div',
       { class: 'sidebar-head' },
       el('span', { class: 'sidebar-title', text: '文件' }),
-      el('div', { class: 'sidebar-tools' }, newFileBtn, newDirBtn, refreshBtn),
-      iconButton('panel-left', '收起文件树', () => toggleSidebar()),
+      el('div', { class: 'sidebar-tools' }, newFileBtn, newDirBtn, refreshBtn, collapseBtn),
     ),
     el('div', { class: 'sidebar-body' }, treeHost),
-    railButtons,
+    sidebarRail,
+    sidebarResizer,
   )
-
-  const railToggle = el(
-    'button',
-    {
-      class: 'rail-toggle',
-      attrs: { type: 'button', title: '展开文件树', 'aria-label': '展开文件树' },
-      on: { click: () => toggleSidebar() },
-    },
-    svgIcon('panel-left', 15),
-  )
-  railButtons.prepend(el('div', { class: 'rail-brand', text: 'md' }), railToggle)
 
   // ---------------------------------------------------------------- editors
 
@@ -182,31 +250,37 @@ export function mountApp(host, opts) {
   const editorEmpty = el(
     'div',
     { class: 'pane-empty' },
-    el('div', { class: 'pane-empty-icon', text: '⌘' }),
-    el('div', { class: 'pane-empty-title', text: '未打开文件' }),
-    el('div', { class: 'pane-empty-hint', text: '在左侧文件树中选择一个文件开始协作编辑' }),
+    el(
+      'div',
+      { class: 'pane-empty-inner' },
+      el('span', { class: 'pane-empty-icon' }, icon('doc', 28)),
+      el('span', { class: 'pane-empty-title', text: '还没有打开文件' }),
+      el('span', {
+        class: 'pane-empty-hint',
+        text: '从左侧文件树选一个文件；没有文件就用上方 新建文件 创建第一个 .md',
+      }),
+    ),
   )
   const editorMeta = el('span', { class: 'pane-meta', text: '' })
-  const editorPane = el('section', { class: 'pane pane-editor' },
-    el('div', { class: 'pane-head' },
-      el('span', { class: 'pane-title', text: '编辑' }),
-      editorMeta,
-    ),
+  const editorPane = el(
+    'section',
+    { class: 'pane pane-editor' },
+    el('div', { class: 'pane-head' }, el('span', { class: 'pane-title', text: '编辑' }), editorMeta),
     el('div', { class: 'pane-body' }, editorHost, editorEmpty),
   )
 
   const previewHost = el('div', { class: 'preview-host markdown-body' })
+  const previewMeta = el('span', { class: 'pane-meta', text: '' })
   const syncToggle = el('button', {
     class: 'chip-toggle is-on',
-    attrs: { type: 'button', title: '滚动同步' },
+    attrs: { type: 'button', title: '切换预览滚动同步' },
     text: '滚动同步',
     on: { click: () => toggleScrollSync() },
   })
-  const previewPane = el('section', { class: 'pane pane-preview' },
-    el('div', { class: 'pane-head' },
-      el('span', { class: 'pane-title', text: '预览' }),
-      syncToggle,
-    ),
+  const previewPane = el(
+    'section',
+    { class: 'pane pane-preview' },
+    el('div', { class: 'pane-head' }, el('span', { class: 'pane-title', text: '预览' }), previewMeta, syncToggle),
     el('div', { class: 'pane-body' }, previewHost),
   )
 
@@ -215,21 +289,45 @@ export function mountApp(host, opts) {
 
   // ------------------------------------------------------------ collab panel
 
-  const onlineCount = el('span', { class: 'collab-count', text: '在线 0 人' })
+  const collabCount = el(
+    'span',
+    { class: 'collab-count' },
+    '在线 ',
+    el('span', { class: 'collab-count-num', text: '0' }),
+    ' 人',
+  )
   const presenceList = el('div', { class: 'collab-list' })
+
+  // You are always in the rail — the list is never empty, and your own
+  // cursor position updates live in the same row shape as everyone else's.
+  const selfCursor = el('span', { class: 'peer-cursor', text: '行 1, 列 1' })
+  const selfFile = el('span', { class: 'peer-file', text: '未打开文件' })
+  const selfRow = el(
+    'div',
+    { class: 'peer-row is-me' },
+    el('span', { class: 'peer-dot', style: `background:${state.user.color || 'var(--fg-3)'}` }),
+    el(
+      'span',
+      { class: 'peer-name' },
+      state.user.username,
+      el('span', { class: 'peer-tag', text: '你' }),
+    ),
+    selfCursor,
+    selfFile,
+  )
   const collabPanel = el(
     'aside',
     { class: 'collab-panel' },
-    el('div', { class: 'collab-head' }, svgIcon('users', 14), onlineCount),
+    el('div', { class: 'collab-head' }, el('span', { class: 'collab-title', text: '协作' }), collabCount),
     presenceList,
   )
 
   // -------------------------------------------------------------- status bar
 
-  const statusCursor = el('span', { class: 'status-item mono', text: '行 1，列 1' })
+  const statusCursor = el('span', { class: 'status-item', text: '行 1, 列 1' })
   const statusWords = el('span', { class: 'status-item', text: '0 字' })
   const statusOnline = el('span', { class: 'status-item', text: '在线 0 人' })
-  const statusFile = el('span', { class: 'status-item status-path', text: '—' })
+  const statusFile = el('span', { class: 'status-path', text: '—' })
   const statusSave = el('span', { class: 'status-item', text: '已保存' })
   const statusbar = el(
     'footer',
@@ -238,7 +336,13 @@ export function mountApp(host, opts) {
     el('div', { class: 'status-right' }, statusCursor, statusWords, statusOnline, statusSave),
   )
 
-  const shell = el('div', { class: 'app-shell' }, topbar, el('div', { class: 'app-body' }, sidebar, center, collabPanel), statusbar)
+  const shell = el(
+    'div',
+    { class: 'app-shell' },
+    topbar,
+    el('div', { class: 'app-body' }, sidebar, center, collabPanel),
+    statusbar,
+  )
   host.append(shell)
 
   // ------------------------------------------------------------ collab setup
@@ -247,14 +351,14 @@ export function mountApp(host, opts) {
     user: state.user,
     onStatus: (status) => {
       if (status === 'open') {
-        connBadge.textContent = '已连接'
+        connText.textContent = '已连接'
         connBadge.classList.add('is-online')
         connBadge.classList.remove('is-offline')
       } else if (status === 'connecting') {
-        connBadge.textContent = '连接中…'
+        connText.textContent = '连接中…'
         connBadge.classList.remove('is-online', 'is-offline')
       } else {
-        connBadge.textContent = '重连中…'
+        connText.textContent = '已断开'
         connBadge.classList.add('is-offline')
         connBadge.classList.remove('is-online')
       }
@@ -313,23 +417,26 @@ export function mountApp(host, opts) {
   // ------------------------------------------------------------------ tree IO
 
   async function reloadTree(notify = false) {
+    if (!state.treeLoaded) tree.setLoading(true)
     try {
       const data = await api.files()
       state.tree = Array.isArray(data.tree) ? data.tree : []
+      state.treeLoaded = true
       tree.setTree(state.tree)
       paintTreePresence()
       if (notify) toastSuccess('文件列表已刷新')
     } catch (err) {
-      toastError(err.message || '无法加载文件列表')
+      tree.setError(err.message || '无法加载文件列表')
+      toastError(err.message || '文件树加载失败，请检查网络后重试')
     }
   }
 
   async function createEntry(kind) {
     const dir = state.currentPath ? parentPath(state.currentPath) : ''
     const result = await promptDialog({
-      title: kind === 'file' ? '新建文件' : '新建目录',
+      title: kind === 'file' ? '新建文件' : '新建文件夹',
       subtitle: '路径相对于工作区根目录',
-      label: kind === 'file' ? '文件路径' : '目录路径',
+      label: kind === 'file' ? '文件路径' : '文件夹路径',
       value: dir ? `${dir}/` : '',
       placeholder: kind === 'file' ? 'notes/todo.md' : 'notes',
       confirmLabel: '创建',
@@ -347,9 +454,9 @@ export function mountApp(host, opts) {
       await api.createEntry(path, kind, kind === 'file' ? '' : '')
       await reloadTree()
       if (kind === 'file') await openFile(path)
-      toastSuccess(kind === 'file' ? `已创建 ${path}` : `已创建目录 ${path}`)
+      toastSuccess(kind === 'file' ? `已创建 ${path}` : `已创建文件夹 ${path}`)
     } catch (err) {
-      toastError(err.message || '创建失败')
+      toastError(err.message || '创建失败，请换一个路径后重试')
     }
   }
 
@@ -386,13 +493,13 @@ export function mountApp(host, opts) {
       }
       toastSuccess('重命名完成')
     } catch (err) {
-      toastError(err.message || '重命名失败')
+      toastError(err.message || '重命名失败，请检查目标路径是否已存在')
     }
   }
 
   async function deleteEntry(path) {
     const ok = await confirmDialog({
-      title: '删除确认',
+      title: '删除文件',
       message: `确定删除 ${path} 吗？目录会被递归删除，此操作不可撤销。`,
       confirmLabel: '删除',
       danger: true,
@@ -412,7 +519,7 @@ export function mountApp(host, opts) {
       await reloadTree()
       toastSuccess('已删除')
     } catch (err) {
-      toastError(err.message || '删除失败')
+      toastError(err.message || '删除失败，请确认文件是否仍存在')
     }
   }
 
@@ -438,6 +545,7 @@ export function mountApp(host, opts) {
     }
     editorHost.innerHTML = ''
     editorEmpty.style.display = ''
+    previewMeta.textContent = ''
     preview.renderEmpty('无可预览内容', '打开一个 Markdown 文件即可实时预览')
   }
 
@@ -454,6 +562,8 @@ export function mountApp(host, opts) {
     }
     const previous = state.currentPath
     tree.setCurrent(path)
+    // Re-rendering the tree drops the presence dots; put them back immediately.
+    paintTreePresence()
 
     if (previous && previous !== path) collab.leaveFile(previous)
     await closeEditor()
@@ -471,7 +581,7 @@ export function mountApp(host, opts) {
         toastWarn('实时会话连接较慢，正在继续尝试同步…')
       }
     } catch (err) {
-      toastError(err.message || '无法打开文件')
+      toastError(err.message || '无法打开文件，请稍后重试')
       return
     }
     if (state.destroyed || state.currentPath !== path) return
@@ -479,6 +589,7 @@ export function mountApp(host, opts) {
     const ytext = session.ydoc.getText('content')
     const md = isMarkdownPath(path)
     editorEmpty.style.display = 'none'
+    previewMeta.textContent = md ? 'gfm · 只读' : baseName(path)
 
     try {
       if (md) {
@@ -568,19 +679,16 @@ export function mountApp(host, opts) {
   // ---------------------------------------------------------------- rendering
 
   function renderBreadcrumb() {
+    breadcrumb.innerHTML = ''
     if (!state.currentPath) {
-      breadcrumb.innerHTML = ''
       breadcrumb.append(el('span', { class: 'crumb-empty', text: '未打开文件' }))
       statusFile.textContent = '—'
       return
     }
     const parts = state.currentPath.split('/')
-    breadcrumb.innerHTML = ''
     parts.forEach((part, index) => {
       const isLast = index === parts.length - 1
-      breadcrumb.append(
-        el('span', { class: `crumb${isLast ? ' crumb-current' : ''}`, text: part }),
-      )
+      breadcrumb.append(el('span', { class: `crumb${isLast ? ' crumb-current' : ''}`, text: part }))
       if (!isLast) breadcrumb.append(el('span', { class: 'crumb-sep', text: '/' }))
     })
     statusFile.textContent = state.currentPath
@@ -590,16 +698,17 @@ export function mountApp(host, opts) {
     const saving = state.saveState === 'saving'
     saveDot.className = `save-dot${saving ? ' is-saving' : ' is-saved'}`
     saveText.textContent = saving ? '保存中…' : '已保存'
-    statusSave.textContent = saving
-      ? '保存中…'
-      : state.saveAt
-        ? `已保存 ${fmtClock(state.saveAt)}`
-        : '已保存'
+    saveIndicator.title = state.saveAt ? `最后保存 ${fmtClock(state.saveAt)}` : '编辑内容已实时保存'
+    statusSave.textContent = saving ? '保存中…' : '已保存'
+    statusSave.title = state.saveAt ? `最后保存 ${fmtClock(state.saveAt)}` : '编辑内容已实时保存'
   }
 
   function renderCursor(pos) {
     if (!pos) return
-    statusCursor.textContent = `行 ${pos.line + 1}，列 ${pos.ch + 1}`
+    state.cursor = pos
+    const label = `行 ${pos.line + 1}, 列 ${pos.ch + 1}`
+    statusCursor.textContent = label
+    selfCursor.textContent = label
   }
 
   function renderWords() {
@@ -608,8 +717,16 @@ export function mountApp(host, opts) {
 
   function renderStatus() {
     statusOnline.textContent = `在线 ${state.online} 人`
-    onlineCount.textContent = `在线 ${state.online} 人`
+    collabCount.replaceChildren('在线 ', el('span', { class: 'collab-count-num', text: String(state.online) }), ' 人')
     statusFile.textContent = state.currentPath || '—'
+    if (state.currentPath) {
+      selfFile.replaceChildren(
+        '正在编辑 ',
+        el('span', { class: 'peer-file-name', text: baseName(state.currentPath) }),
+      )
+    } else {
+      selfFile.textContent = '未打开文件'
+    }
     renderSave()
     renderWords()
   }
@@ -618,25 +735,33 @@ export function mountApp(host, opts) {
     state.presence = users || []
     state.online = state.presence.length
     presenceList.innerHTML = ''
+    presenceList.append(selfRow)
 
-    if (!state.online) {
+    const others = state.presence.filter((peer) => !(peer.id && state.user.id && peer.id === state.user.id))
+    if (!others.length) {
       presenceList.append(
-        el('div', { class: 'collab-empty' },
-          el('div', { class: 'collab-empty-title', text: '暂无其他在线成员' }),
-          el('div', { class: 'collab-empty-hint', text: '邀请同伴登录后即可看到实时光标' }),
+        el(
+          'div',
+          { class: 'collab-empty' },
+          el('span', { class: 'collab-empty-title', text: '现在只有你在线' }),
+          el('span', {
+            class: 'collab-empty-hint',
+            text: '把同一个文件名分享给同事，打开后就能看到彼此的光标',
+          }),
         ),
       )
     } else {
-      const sorted = [...state.presence].sort((a, b) => {
+      const sorted = [...others].sort((a, b) => {
         const aSame = a.path === state.currentPath ? 0 : 1
         const bSame = b.path === state.currentPath ? 0 : 1
         if (aSame !== bSame) return aSame - bSame
         return String(a.username).localeCompare(String(b.username))
       })
       for (const peer of sorted) {
-        presenceList.append(renderPeer(peer))
+        presenceList.append(renderPeer(peer, !state.seenPeers.has(peer.id)))
       }
     }
+    state.seenPeers = new Set(state.presence.map((peer) => peer.id))
     paintTreePresence()
     renderStatus()
   }
@@ -662,29 +787,28 @@ export function mountApp(host, opts) {
       row.setAttribute('data-editors', users.map((u) => u.username).join('、'))
       const dot = el('span', {
         class: 'tree-presence-dot',
-        style: `background:${users[0].color || '#4f9cf9'}`,
+        style: `background:${users[0].color || 'var(--fg-3)'}`,
         attrs: { title: `正在编辑：${users.map((u) => u.username).join('、')}` },
       })
-      row.append(dot)
+      const actions = row.querySelector('.tree-row-actions')
+      if (actions) row.insertBefore(dot, actions)
+      else row.append(dot)
     }
   }
 
-  function renderPeer(peer) {
+  function renderPeer(peer, isNew) {
     const sameFile = peer.path && peer.path === state.currentPath
-    const isSelf = peer.id && user.id && peer.id === user.id
-    const color = peer.color || '#4f9cf9'
-    const dot = el('span', {
-      class: 'peer-dot',
-      style: `background:${color};box-shadow:0 0 0 3px ${colorLight(color, 0.18)}`,
-    })
-    const cursorText = peer.cursor
-      ? `${peer.cursor.line + 1}:${peer.cursor.ch + 1}`
-      : '未在编辑'
+    const color = peer.color || 'var(--fg-3)'
+    const dot = el('span', { class: 'peer-dot', style: `background:${color}` })
+    const cursorText = peer.cursor ? `行 ${peer.cursor.line + 1}, 列 ${peer.cursor.ch + 1}` : '—'
+    const fileLine = peer.path
+      ? el('span', { class: 'peer-file' }, '正在编辑 ', el('span', { class: 'peer-file-name', text: baseName(peer.path) }))
+      : el('span', { class: 'peer-file', text: '未打开文件' })
     const row = el(
       'button',
       {
-        class: `peer-row${sameFile ? ' is-current' : ''}${isSelf ? ' is-self' : ''}`,
-        attrs: { type: 'button' },
+        class: `peer-row${sameFile ? ' is-current' : ''}${isNew ? ' is-new' : ''}`,
+        attrs: { type: 'button', title: peer.path ? `打开 ${peer.path}` : `${peer.username} 未打开文件` },
         on: {
           click: async () => {
             if (!peer.path) {
@@ -699,18 +823,9 @@ export function mountApp(host, opts) {
         },
       },
       dot,
-      el(
-        'div',
-        { class: 'peer-main' },
-        el(
-          'div',
-          { class: 'peer-line1' },
-          el('span', { class: 'peer-name', text: peer.username || '匿名' }),
-          isSelf ? el('span', { class: 'peer-tag', text: '我' }) : null,
-        ),
-        el('div', { class: 'peer-line2 mono', text: peer.path || '—' }),
-      ),
-      el('span', { class: 'peer-cursor mono', text: cursorText }),
+      el('span', { class: 'peer-name', text: peer.username || '匿名' }),
+      el('span', { class: 'peer-cursor', text: cursorText }),
+      fileLine,
     )
     return row
   }
@@ -718,15 +833,55 @@ export function mountApp(host, opts) {
   // ------------------------------------------------------------- interactions
 
   let sidebarCollapsed = lsGet(LS.sidebar, '0') === '1'
+  let treeWidth = Number(lsGet(LS.treeW, '0')) || 0
+  if (treeWidth) treeWidth = Math.min(TREE_MAX, Math.max(TREE_MIN, treeWidth))
+
+  function applyTreeWidth() {
+    if (sidebarCollapsed) {
+      shell.style.setProperty('--tree-w', `${TREE_RAIL}px`)
+      return
+    }
+    if (treeWidth) shell.style.setProperty('--tree-w', `${Math.round(treeWidth)}px`)
+    else shell.style.removeProperty('--tree-w')
+  }
+
   function applySidebar() {
     shell.classList.toggle('sidebar-collapsed', sidebarCollapsed)
     lsSet(LS.sidebar, sidebarCollapsed ? '1' : '0')
+    applyTreeWidth()
   }
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed
     applySidebar()
+    state.editor && state.editor.layout && state.editor.layout()
   }
   applySidebar()
+
+  // Sidebar width drag with persisted width.
+  let resizingTree = false
+  const onTreeMove = (ev) => {
+    if (!resizingTree) return
+    const rect = shell.getBoundingClientRect()
+    treeWidth = Math.min(TREE_MAX, Math.max(TREE_MIN, ev.clientX - rect.left))
+    applyTreeWidth()
+  }
+  const onTreeUp = () => {
+    if (!resizingTree) return
+    resizingTree = false
+    sidebarResizer.classList.remove('is-dragging')
+    document.body.classList.remove('is-resizing')
+    if (treeWidth) lsSet(LS.treeW, String(Math.round(treeWidth)))
+    state.editor && state.editor.layout && state.editor.layout()
+  }
+  sidebarResizer.addEventListener('pointerdown', (ev) => {
+    if (sidebarCollapsed) return
+    resizingTree = true
+    sidebarResizer.classList.add('is-dragging')
+    sidebarResizer.setPointerCapture?.(ev.pointerId)
+    document.body.classList.add('is-resizing')
+  })
+  window.addEventListener('pointermove', onTreeMove)
+  window.addEventListener('pointerup', onTreeUp)
 
   // Splitter drag with persisted ratio.
   let splitRatio = Number(lsGet(LS.split, '0.52'))
@@ -782,11 +937,10 @@ export function mountApp(host, opts) {
 
   function applyUser(next) {
     state.user = { ...state.user, ...next }
-    userDot.style.background = state.user.color || '#4f9cf9'
-    userChip.querySelector('.user-name').textContent = state.user.username
-    const badge = userChip.querySelector('.badge')
-    badge.className = `badge badge-${state.user.role === 'admin' ? 'admin' : 'user'}`
-    badge.textContent = state.user.role
+    userDot.style.background = state.user.color || 'var(--fg-3)'
+    userName.textContent = state.user.username
+    userBadge.className = `badge badge-${state.user.role === 'admin' ? 'admin' : 'user'}`
+    userBadge.textContent = state.user.role
     adminBtn.style.display = state.user.role === 'admin' ? '' : 'none'
     onUserUpdate && onUserUpdate(state.user)
   }
@@ -834,6 +988,8 @@ export function mountApp(host, opts) {
       collab.leaveFile(state.currentPath)
     }
     window.removeEventListener('keydown', onKeyDown, true)
+    window.removeEventListener('pointermove', onTreeMove)
+    window.removeEventListener('pointerup', onTreeUp)
     window.removeEventListener('pointermove', onSplitMove)
     window.removeEventListener('pointerup', onSplitUp)
     resizeObserver && resizeObserver.disconnect()

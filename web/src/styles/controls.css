@@ -1,0 +1,343 @@
+/* Shared controls: buttons, inputs, fields, badges, icon buttons, chips, kv rows.
+ * Owned by the "views" pass; every other stylesheet consumes these classes.
+ * Spec: docs/design.md §6 — three button levels, one input, quiet badges. */
+
+/* ------------------------------------------------------------------ buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  height: var(--control-h);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out),
+    opacity var(--dur-1) var(--ease-out);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: color-mix(in oklab, var(--line) 65%, var(--fg-3));
+}
+
+.btn:active:not(:disabled) {
+  background: var(--bg-3);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+}
+
+/* Quiet levels only fade; solid levels repaint neutral so no "colour plate,
+ * grey label" state can appear. */
+.btn-ghost:disabled,
+.icon-btn:disabled,
+.chip-toggle:disabled {
+  opacity: 0.45;
+}
+
+.btn-primary:disabled {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--fg-3);
+  opacity: 1;
+}
+
+.btn-sm {
+  height: var(--control-h-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent) 88%, var(--accent-ink));
+  border-color: color-mix(in oklab, var(--accent) 88%, var(--accent-ink));
+}
+
+.btn-primary:active:not(:disabled) {
+  background: color-mix(in oklab, var(--accent) 82%, var(--accent-ink));
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-2);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--fg);
+}
+
+/* Destructive only: transparent until hovered, so one accent stays dominant. */
+.btn-danger {
+  background: transparent;
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn.is-busy:disabled {
+  opacity: 0.6;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--fg);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------- inputs */
+
+.input {
+  width: 100%;
+  height: var(--control-h);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out);
+}
+
+.input::placeholder {
+  color: var(--fg-3);
+}
+
+.input:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--line) 65%, var(--fg-3));
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+textarea.input {
+  height: auto;
+  padding: var(--sp-2) var(--sp-3);
+  line-height: var(--lh-body);
+  resize: vertical;
+}
+
+select.input {
+  padding-right: var(--sp-2);
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------- field / labels */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.field-label {
+  font-size: var(--fs-meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.field-hint {
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+}
+
+.field-error {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--danger);
+}
+
+/* ------------------------------------------------------------------- badges */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.badge-admin {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+
+.badge-user {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--fg-2);
+}
+
+.badge-ok {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* Third warn-flavoured badge ("未启用"): same family as .badge-admin. */
+.badge-warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+
+.badge-muted {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--fg-3);
+}
+
+/* --------------------------------------------------------------- chip toggle */
+
+.chip-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-h-sm);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.chip-toggle::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--fg-3);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.chip-toggle:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--line) 65%, var(--fg-3));
+  color: var(--fg);
+}
+
+.chip-toggle.is-on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+.chip-toggle.is-on::before {
+  background: var(--accent);
+}
+
+/* -------------------------------------------------------------- key / value */
+
+.kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-xs);
+}
+
+.kv-key {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.kv-val {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  color: var(--fg);
+}

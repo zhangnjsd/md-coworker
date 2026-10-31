@@ -1,0 +1,290 @@
+/* Design tokens + base layer — "Ink & Signal".
+ * Every component stylesheet must consume these variables and nothing else.
+ * See docs/design.md for the rules that go with them. */
+
+:root {
+  /* ---------------------------------------------------------------- fonts */
+  --font-latin: 'Geist Variable', 'Geist';
+  --font-cjk: 'PingFang SC', 'Hiragino Sans GB', 'Source Han Sans SC',
+    'Noto Sans CJK SC', 'Microsoft YaHei';
+  --font-sans: var(--font-latin), var(--font-cjk), sans-serif;
+  --font-display: 'Space Grotesk Variable', var(--font-latin), var(--font-cjk), sans-serif;
+  --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
+
+  /* ------------------------------------------------------------ type scale */
+  --fs-meta: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 25px;
+  --fs-3xl: 31px;
+  --fs-code: 13.5px;
+  --fs-prose: 15px;
+
+  --lh-tight: 1.15;
+  --lh-ui: 1.35;
+  --lh-body: 1.6;
+
+  /* --------------------------------------------------------------- colour */
+  /* Cool graphite (hue 255) — tinted neutrals, never pure grey or black. */
+  --bg: oklch(0.205 0.014 250);
+  --bg-1: oklch(0.235 0.014 250);
+  --bg-2: oklch(0.265 0.014 250);
+  --bg-3: oklch(0.305 0.014 250);
+  --bg-editor: oklch(0.195 0.012 250);
+  --bg-preview: oklch(0.248 0.012 250);
+  --line: oklch(0.35 0.016 250);
+  --line-soft: oklch(0.285 0.014 250);
+  --fg: oklch(0.95 0.006 250);
+  --fg-2: oklch(0.78 0.01 250);
+  --fg-3: oklch(0.7 0.012 250);
+  --accent: oklch(0.82 0.12 172);
+  --accent-ink: oklch(0.22 0.05 172);
+  --accent-soft: color-mix(in oklab, var(--accent) 14%, transparent);
+  --accent-line: color-mix(in oklab, var(--accent) 42%, transparent);
+  --danger: oklch(0.72 0.17 25);
+  --danger-ink: oklch(0.96 0.03 25);
+  --danger-soft: color-mix(in oklab, var(--danger) 14%, transparent);
+  --danger-line: color-mix(in oklab, var(--danger) 38%, transparent);
+  --warn: oklch(0.84 0.13 82);
+  --warn-soft: color-mix(in oklab, var(--warn) 13%, transparent);
+  --warn-line: color-mix(in oklab, var(--warn) 34%, transparent);
+  --ok: var(--accent);
+  --overlay: oklch(0.12 0.012 250 / 0.62);
+
+  /* Legacy aliases — older markup and inline styles still reference these. */
+  --bg-panel: var(--bg-1);
+  --bg-raised: var(--bg-2);
+  --bg-hover: var(--bg-3);
+  --bg-active: var(--bg-3);
+  --border: var(--line);
+  --border-soft: var(--line-soft);
+  --fg-dim: var(--fg-2);
+  --fg-faint: var(--fg-3);
+  --radius: var(--r-sm);
+  --radius-lg: var(--r-md);
+
+  /* --------------------------------------------------------------- rhythm */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 40px;
+  --sp-8: 56px;
+
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-full: 999px;
+
+  --shadow-1: 0 1px 2px oklch(0 0 0 / 0.35);
+  --shadow-pop: 0 18px 48px oklch(0 0 0 / 0.55), 0 2px 8px oklch(0 0 0 / 0.4);
+
+  /* --------------------------------------------------------------- motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 320ms;
+
+  /* --------------------------------------------------------------- layout */
+  --topbar-h: 48px;
+  --status-h: 28px;
+  --rail-w: 236px;
+  --tree-w: 264px;
+  --control-h: 30px;
+  --control-h-sm: 26px;
+
+  color-scheme: dark;
+}
+
+/* ------------------------------------------------------------------ reset */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  min-width: 1024px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: var(--lh-ui);
+  font-feature-settings: 'cv11' 1, 'ss01' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#app-root,
+.view {
+  height: 100%;
+  min-height: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+
+p {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+svg {
+  display: block;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ------------------------------------------------------------------ focus */
+/* One visible ring everywhere; components never reset outline without it. */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------- scrollbar */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--bg-3) 70%, var(--fg-3));
+  background-clip: padding-box;
+}
+
+/* -------------------------------------------------------------- utilities */
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.dim {
+  color: var(--fg-2);
+}
+
+.hidden-file {
+  display: none;
+}
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  flex: 0 0 auto;
+}
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--fg-2);
+}
+
+/* Skeleton beats a spinner: it shows the shape of what is coming. */
+.skeleton {
+  display: block;
+  border-radius: var(--r-xs);
+  background: var(--bg-2);
+  animation: skeleton-breathe 1.6s var(--ease-out) infinite;
+}
+
+@keyframes skeleton-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+/* --------------------------------------------------------------- a11y base */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

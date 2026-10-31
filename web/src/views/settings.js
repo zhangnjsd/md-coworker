@@ -1,14 +1,14 @@
-// Settings dialog: TOTP two-factor setup/teardown and keypair rotation.
+// Settings dialog: account summary, TOTP two-factor setup/teardown, key rotation.
 import QRCode from 'qrcode'
 import { api, storeKey } from '../net/api.js'
-import { button, el, svgIcon } from '../util/dom.js'
+import { button, copyText, el, fmtDateTime } from '../util/dom.js'
 import { confirmDialog, openModal } from '../ui/modal.js'
 import { privateKeyPanel } from '../ui/secret.js'
 import { toastError, toastSuccess } from '../ui/toast.js'
 
 /**
  * @param {{
- *   user: {id: string, username: string, role: string, color?: string, twofa_enabled?: boolean},
+ *   user: {id: string, username: string, role: string, color?: string, twofa_enabled?: boolean, created_at?: string},
  *   onUserUpdate?: (user: any) => void,
  * }} opts
  */
@@ -21,83 +21,103 @@ export function openSettings(opts) {
     title: '设置',
     subtitle: `账号 ${user.username}`,
     body,
-    width: '640px',
+    width: 560,
     actions: [{ label: '关闭', kind: 'ghost', close: true }],
   })
+
+  function section(title, extra) {
+    return el(
+      'section',
+      { class: 'settings-section' },
+      el('div', { class: 'settings-head' }, el('h3', { class: 'settings-title', text: title }), extra || null),
+    )
+  }
+
+  function kvRow(key, valueNode) {
+    return el(
+      'div',
+      { class: 'kv' },
+      el('span', { class: 'kv-key', text: key }),
+      el('span', { class: 'kv-val' }, valueNode),
+    )
+  }
 
   // ------------------------------------------------------------- account
 
   function renderAccount() {
-    return el(
-      'section',
-      { class: 'settings-section' },
-      el('div', { class: 'settings-head' },
-        el('h3', { class: 'settings-title', text: '账号' }),
+    const node = section('账号')
+    const list = el('div', { class: 'kv-list' })
+    list.append(
+      kvRow('用户名', el('span', { class: 'mono', text: user.username })),
+      kvRow(
+        '角色',
+        el('span', {
+          class: `badge badge-${user.role === 'admin' ? 'admin' : 'user'}`,
+          text: user.role,
+        }),
       ),
-      el(
-        'div',
-        { class: 'kv-list' },
-        el('div', { class: 'kv' },
-          el('span', { class: 'kv-key', text: '用户名' }),
-          el('span', { class: 'kv-val mono', text: user.username }),
-        ),
-        el('div', { class: 'kv' },
-          el('span', { class: 'kv-key', text: '角色' }),
-          el('span', { class: `badge badge-${user.role === 'admin' ? 'admin' : 'user'}`, text: user.role }),
-        ),
-        el('div', { class: 'kv' },
-          el('span', { class: 'kv-key', text: '标识色' }),
-          el('span', { class: 'kv-val' },
-            el('span', { class: 'dot', style: `background:${user.color || '#4f9cf9'}` }),
-            el('span', { class: 'mono dim', text: user.color || '#4f9cf9' }),
-          ),
+      kvRow(
+        '标识色',
+        el(
+          'span',
+          { class: 'settings-swatch' },
+          el('span', { class: 'dot', style: { background: user.color || 'var(--accent)' } }),
+          el('span', { class: 'settings-hint', text: '协作光标与在线标识使用该颜色' }),
         ),
       ),
+      user.created_at
+        ? kvRow('创建时间', el('span', { class: 'settings-mono', text: fmtDateTime(user.created_at) }))
+        : null,
     )
+    node.append(list)
+    return node
   }
 
   // ------------------------------------------------------------- 2FA block
 
-  let qrUrl = null
-
   function renderTwoFactor() {
     const enabled = !!user.twofa_enabled
-    const section = el('section', { class: 'settings-section' },
-      el('div', { class: 'settings-head' },
-        el('h3', { class: 'settings-title', text: '两步验证（TOTP）' }),
-        el('span', {
-          class: `badge ${enabled ? 'badge-ok' : 'badge-muted'}`,
-          text: enabled ? '已启用' : '未启用',
-        }),
-      ),
+    const node = section(
+      '二次验证',
+      el('span', {
+        class: `badge ${enabled ? 'badge-ok' : 'badge-muted'}`,
+        text: enabled ? '已开启' : '未开启',
+      }),
+    )
+
+    node.append(
       el('p', {
         class: 'settings-text',
         text: enabled
-          ? '登录时除签名外还需要输入身份验证器中的 6 位验证码。'
-          : '启用后登录需要额外的 6 位动态验证码，推荐与密钥对一起使用。',
+          ? '登录时除密钥签名外，还需要输入身份验证器中的 6 位验证码。'
+          : '开启后登录需要额外输入 6 位动态验证码，密钥泄露时仍有一道防线。',
       }),
     )
 
     const slot = el('div', { class: 'settings-slot' })
-    section.append(slot)
+    node.append(slot)
 
     if (enabled) {
       const codeInput = el('input', {
-        class: 'input mono',
+        class: 'input totp-input',
         attrs: {
           type: 'text',
           inputmode: 'numeric',
           maxlength: '6',
-          placeholder: '6 位验证码',
+          placeholder: '000000',
           spellcheck: 'false',
+          'aria-label': '当前 6 位验证码',
         },
       })
       const disableBtn = button('关闭 2FA', 'danger', async () => {
         const code = codeInput.value.trim()
         if (code.length !== 6) {
-          toastError('请输入 6 位验证码')
+          toastError('请输入身份验证器中的 6 位验证码')
+          codeInput.focus()
           return
         }
+        disableBtn.disabled = true
+        disableBtn.classList.add('is-busy')
         try {
           const res = await api.disable2fa(code)
           if (res && res.user) {
@@ -106,68 +126,73 @@ export function openSettings(opts) {
           } else {
             user.twofa_enabled = false
           }
-          toastSuccess('已关闭两步验证')
+          toastSuccess('已关闭二次验证')
           refresh()
         } catch (err) {
-          toastError(err.message || '关闭失败')
+          toastError(err.message || '关闭 2FA 失败，请检查验证码')
+        } finally {
+          disableBtn.classList.remove('is-busy')
+          disableBtn.disabled = false
         }
       })
       slot.append(
-        el('div', { class: 'inline-form' },
-          codeInput,
-          disableBtn,
-        ),
-        el('p', { class: 'settings-hint', text: '关闭 2FA 需要输入当前验证码以确认身份。' }),
+        el('div', { class: 'inline-form' }, codeInput, disableBtn),
+        el('p', { class: 'settings-hint', text: '关闭 2FA 需要输入当前验证码确认身份。' }),
       )
-      return section
+      return node
     }
 
-    const startBtn = button('启用 2FA', 'primary', async () => {
+    const startBtn = button('开启 2FA', 'primary', async () => {
       startBtn.disabled = true
+      startBtn.classList.add('is-busy')
       try {
         const res = await api.setup2fa()
-        qrUrl = res.otpauth_url
-        renderQr(res)
+        renderSetup(res)
       } catch (err) {
-        toastError(err.message || '无法获取 2FA 配置')
+        toastError(err.message || '无法获取 2FA 配置，请重试')
       } finally {
+        startBtn.classList.remove('is-busy')
         startBtn.disabled = false
       }
     })
     slot.append(el('div', { class: 'inline-form' }, startBtn))
-    return section
+    return node
 
-    function renderQr(res) {
+    function renderSetup(res) {
       slot.innerHTML = ''
-      const canvas = el('canvas', { class: 'qr-canvas', attrs: { width: '188', height: '188' } })
-      const secretCode = el('code', { class: 'secret-code mono', text: res.secret })
 
-      QRCode.toCanvas(canvas, res.otpauth_url, {
-        margin: 1,
-        width: 188,
-        color: { dark: '#0b0e13', light: '#ffffff' },
-      }).catch((err) => {
-        toastError(`二维码生成失败：${err.message || err}`)
+      const canvas = el('canvas', { class: 'qr-canvas', attrs: { width: '188', height: '188' } })
+      QRCode.toCanvas(canvas, res.otpauth_url, { margin: 1, width: 188 }).catch((err) => {
+        toastError(`二维码生成失败：${err.message || err}，请用手动密钥绑定`)
       })
 
+      const secretCode = el('code', { class: 'secret-code', text: res.secret })
+      const copyBtn = button('复制密钥', 'ghost', async () => {
+        const ok = await copyText(res.secret)
+        ok ? toastSuccess('已复制手动密钥') : toastError('复制失败，请手动选择文本复制')
+      }, 'btn-sm')
+
       const codeInput = el('input', {
-        class: 'input mono',
+        class: 'input totp-input',
         attrs: {
           type: 'text',
           inputmode: 'numeric',
           maxlength: '6',
-          placeholder: '输入验证码完成启用',
+          placeholder: '000000',
           spellcheck: 'false',
+          'aria-label': '验证器中的 6 位验证码',
         },
       })
 
-      const confirmBtn = button('确认启用', 'primary', async () => {
+      const confirmBtn = button('启用 2FA', 'primary', async () => {
         const code = codeInput.value.trim()
         if (code.length !== 6) {
-          toastError('请输入 6 位验证码')
+          toastError('请输入验证器中的 6 位验证码')
+          codeInput.focus()
           return
         }
         confirmBtn.disabled = true
+        confirmBtn.classList.add('is-busy')
         try {
           const out = await api.enable2fa(code)
           if (out && out.user) {
@@ -176,38 +201,41 @@ export function openSettings(opts) {
           } else {
             user.twofa_enabled = true
           }
-          toastSuccess('两步验证已启用')
+          toastSuccess('二次验证已开启')
           refresh()
         } catch (err) {
-          toastError(err.message || '启用失败，请检查验证码')
+          toastError(err.message || '启用 2FA 失败，请检查验证码后重试')
         } finally {
+          confirmBtn.classList.remove('is-busy')
           confirmBtn.disabled = false
         }
       })
 
-      const cancelBtn = button('取消', 'ghost', () => refresh())
-
       slot.append(
-        el('div', { class: 'qr-panel' },
-          el('div', { class: 'qr-side' }, canvas, el('div', { class: 'qr-hint', text: '扫描二维码加入验证器' })),
-          el('div', { class: 'qr-main' },
-            el('div', { class: 'field' },
-              el('span', { class: 'field-label', text: '无法扫码？手动输入密钥' }),
-              el('div', { class: 'secret-row' }, secretCode,
-                button('复制', 'ghost', () => {
-                  navigator.clipboard?.writeText(res.secret).then(
-                    () => toastSuccess('已复制密钥'),
-                    () => toastError('复制失败，请手动选择'),
-                  )
-                }, 'btn-sm'),
-              ),
+        el(
+          'div',
+          { class: 'qr-panel' },
+          el('div', { class: 'qr-side' }, canvas, el('div', { class: 'qr-hint', text: '用身份验证器扫描' })),
+          el(
+            'div',
+            { class: 'qr-main' },
+            el(
+              'div',
+              { class: 'field' },
+              el('span', { class: 'field-label', text: '无法扫码时手动输入' }),
+              el('div', { class: 'secret-row' }, secretCode, copyBtn),
             ),
-            el('div', { class: 'field' },
+            el('p', {
+              class: 'settings-hint',
+              text: '系统不提供一次性恢复码：请在验证器内备份该条目，丢失设备后只能请管理员重置 2FA。',
+            }),
+            el(
+              'div',
+              { class: 'field' },
               el('span', { class: 'field-label', text: '验证器中的 6 位验证码' }),
               codeInput,
             ),
-            el('div', { class: 'inline-form' }, confirmBtn, cancelBtn),
-            el('p', { class: 'settings-hint', text: '验证码提交成功后 2FA 立即生效，下次登录起需要一并输入。' }),
+            el('div', { class: 'inline-form' }, confirmBtn, button('取消', 'ghost', () => refresh())),
           ),
         ),
       )
@@ -218,47 +246,48 @@ export function openSettings(opts) {
   // ------------------------------------------------------------- keypair
 
   function renderKeypair() {
-    const section = el('section', { class: 'settings-section' },
-      el('div', { class: 'settings-head' },
-        el('h3', { class: 'settings-title', text: '密钥对' }),
-      ),
+    const node = section('登录密钥')
+    node.append(
       el('p', {
         class: 'settings-text',
-        text: '重新生成会立刻作废旧私钥，并返回一把新的私钥（只显示这一次）。',
+        text: '重新生成后旧密钥立即失效，请把新密钥保存到安全位置。',
       }),
     )
-    const slot = el('div', { class: 'settings-slot' })
-    const regenBtn = button('重新生成密钥对', 'danger', async () => {
+    const regenBtn = button('重新生成密钥', 'danger', async () => {
       const ok = await confirmDialog({
-        title: '重新生成密钥对？',
-        message:
-          '当前私钥将立即失效，无法再用它登录。生成后请务必立刻下载或复制新私钥，它只显示一次。',
-        confirmLabel: '继续生成',
+        title: '重新生成密钥？',
+        message: '当前私钥将立即失效，无法再用它登录。新私钥只显示一次，请立刻复制或下载保存。',
+        confirmLabel: '重新生成',
         danger: true,
       })
       if (!ok) return
       regenBtn.disabled = true
+      regenBtn.classList.add('is-busy')
       try {
         const res = await api.regenerateKeypair()
         storeKey(user.username, res.private_key)
-        slot.innerHTML = ''
-        slot.append(
-          privateKeyPanel({
+        toastSuccess('密钥已重新生成，旧密钥已失效')
+        const keyModal = openModal({
+          title: '新密钥已生成',
+          subtitle: `账号 ${user.username}`,
+          body: privateKeyPanel({
             username: user.username,
             privateKey: res.private_key,
             publicKey: res.public_key,
-            note: '旧私钥已作废。请立刻保存新私钥，关闭此窗口后将无法再次查看。',
+            note: '旧密钥已失效。关闭此窗口后无法再次查看，请立刻保存到安全位置。',
           }),
-        )
-        toastSuccess('密钥对已更新，旧私钥已失效')
+          width: 640,
+          actions: [{ label: '我已保存，关闭', kind: 'primary', onClick: () => keyModal.close() }],
+        })
       } catch (err) {
-        toastError(err.message || '生成失败')
+        toastError(err.message || '生成密钥失败，请重试')
       } finally {
+        regenBtn.classList.remove('is-busy')
         regenBtn.disabled = false
       }
     })
-    section.append(slot, el('div', { class: 'inline-form' }, regenBtn))
-    return section
+    node.append(el('div', { class: 'settings-danger' }, regenBtn))
+    return node
   }
 
   function refresh() {

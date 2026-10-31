@@ -4,7 +4,6 @@ import katexPluginModule from '@vscode/markdown-it-katex'
 import hljs from 'highlight.js/lib/common'
 import DOMPurify from 'dompurify'
 import 'katex/dist/katex.min.css'
-import 'highlight.js/styles/github-dark-dimmed.css'
 
 const katexPlugin = katexPluginModule && katexPluginModule.default ? katexPluginModule.default : katexPluginModule
 
@@ -50,15 +49,24 @@ function loadMermaid() {
           startOnLoad: false,
           theme: 'dark',
           securityLevel: 'strict',
-          fontFamily: "'Inter', 'Noto Sans SC', system-ui, sans-serif",
+          fontFamily: "'Geist Variable','PingFang SC','Noto Sans CJK SC',sans-serif",
           themeVariables: {
-            background: '#11151b',
-            primaryColor: '#1c2532',
-            primaryTextColor: '#dbe3ee',
-            primaryBorderColor: '#334155',
-            lineColor: '#7c8ca1',
-            secondaryColor: '#1a2331',
-            tertiaryColor: '#141b24',
+            background: '#1d2227',
+            mainBkg: '#20262c',
+            primaryColor: '#20262c',
+            primaryTextColor: '#ebeff2',
+            primaryBorderColor: '#343b43',
+            secondaryColor: '#2a3036',
+            tertiaryColor: '#191f25',
+            textColor: '#b3b8be',
+            lineColor: '#999fa6',
+            nodeBorder: '#343b43',
+            clusterBkg: '#191f25',
+            clusterBorder: '#252b31',
+            edgeLabelBackground: '#1d2227',
+            noteBkgColor: '#20262c',
+            noteTextColor: '#b3b8be',
+            noteBorderColor: '#343b43',
           },
         })
         return mermaid

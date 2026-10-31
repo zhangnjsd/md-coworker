@@ -15,11 +15,11 @@ export function privateKeyPanel({ username, privateKey, publicKey = '', note = '
   const copyKeyBtn = el('button', {
     class: 'btn btn-ghost',
     attrs: { type: 'button' },
-    text: '复制私钥',
+    text: '复制密钥',
     on: {
       click: async () => {
         const ok = await copyText(privateKey)
-        ok ? toastSuccess('私钥已复制到剪贴板') : toastError('复制失败，请手动选择文本复制')
+        ok ? toastSuccess('密钥已复制到剪贴板') : toastError('复制失败，请手动选择文本复制')
       },
     },
   })

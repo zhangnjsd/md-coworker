@@ -1,4 +1,4 @@
-// Top-right toast notifications (never window.alert).
+// Bottom-right toast stack (never window.alert). Max 3 visible at a time.
 import { el, svgIcon } from '../util/dom.js'
 
 let host = null
@@ -14,6 +14,7 @@ function ensureHost() {
 }
 
 const ICON_FOR = { info: 'info', success: 'check', error: 'alert', warn: 'alert' }
+const MAX_TOASTS = 3
 
 /**
  * @param {string} message
@@ -23,16 +24,24 @@ export function toast(message, opts = {}) {
   const { type = 'info', duration = 3200, detail = '' } = opts
   const node = el(
     'div',
-    { class: `toast toast-${type}` },
+    {
+      class: `toast toast-${type}`,
+      attrs: { role: type === 'error' ? 'alert' : 'none', title: '点击关闭' },
+    },
     svgIcon(ICON_FOR[type] || 'info', 15),
     el('div', { class: 'toast-text' }, el('span', { text: String(message) }), detail ? el('small', { text: detail }) : null),
   )
-  ensureHost().appendChild(node)
+  const parent = ensureHost()
+  parent.appendChild(node)
+  while (parent.children.length > MAX_TOASTS) parent.firstElementChild.remove()
   requestAnimationFrame(() => node.classList.add('in'))
+  let dead = false
   const kill = () => {
+    if (dead) return
+    dead = true
     node.classList.remove('in')
     node.classList.add('out')
-    setTimeout(() => node.remove(), 220)
+    setTimeout(() => node.remove(), 180)
   }
   const timer = setTimeout(kill, Math.max(1200, duration))
   node.addEventListener('click', () => {

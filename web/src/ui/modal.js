@@ -2,6 +2,7 @@
 import { el, svgIcon, clear } from '../util/dom.js'
 
 let openStack = []
+let modalSeq = 0
 
 function lockScroll(on) {
   document.body.classList.toggle('modal-open', on)
@@ -21,7 +22,8 @@ function lockScroll(on) {
 export function openModal(opts) {
   const { title, subtitle = '', body = null, actions = [], width = 520, dismissable = true, onClose } = opts
 
-  const titleNode = el('h2', { class: 'modal-title', text: title })
+  const titleId = `modal-title-${++modalSeq}`
+  const titleNode = el('h2', { class: 'modal-title', text: title, attrs: { id: titleId } })
   const subtitleNode = subtitle ? el('p', { class: 'modal-subtitle', text: subtitle }) : null
   const bodyWrap = el('div', { class: 'modal-body' })
   if (body) bodyWrap.appendChild(body instanceof Node ? body : document.createTextNode(String(body)))
@@ -35,7 +37,11 @@ export function openModal(opts) {
 
   const card = el(
     'div',
-    { class: 'modal', style: { width: `min(${width}px, calc(100vw - 64px))` }, attrs: { role: 'dialog', 'aria-modal': 'true' } },
+    {
+      class: 'modal',
+      style: { width: `min(${width}px, calc(100vw - 64px))` },
+      attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabindex: '-1' },
+    },
     el('div', { class: 'modal-head' }, el('div', { class: 'modal-head-text' }, titleNode, subtitleNode), closeBtn),
     bodyWrap,
     footWrap,
@@ -99,18 +105,29 @@ export function openModal(opts) {
   }
 
   function close() {
-    if (!backdrop.isConnected) return
+    if (!backdrop.isConnected || backdrop.classList.contains('out')) return
     document.removeEventListener('keydown', onKeydown, true)
+    backdrop.classList.remove('in')
     backdrop.classList.add('out')
     openStack = openStack.filter((item) => item !== api)
     if (!openStack.length) lockScroll(false)
-    setTimeout(() => backdrop.remove(), 160)
+    setTimeout(() => backdrop.remove(), 320)
+    // hand focus back to whatever opened the dialog
+    if (!openStack.length && lastFocus && lastFocus.isConnected) {
+      try {
+        lastFocus.focus()
+      } catch {
+        /* ignore */
+      }
+    }
     try {
       onClose && onClose()
     } catch {
       /* ignore */
     }
   }
+
+  const lastFocus = document.activeElement
 
   backdrop.addEventListener('mousedown', (ev) => {
     if (dismissable && ev.target === backdrop) close()
@@ -122,8 +139,12 @@ export function openModal(opts) {
   lockScroll(true)
   requestAnimationFrame(() => backdrop.classList.add('in'))
 
-  const focusTarget = bodyWrap.querySelector('input, textarea, select, button')
-  if (focusTarget) setTimeout(() => focusTarget.focus(), 30)
+  // initial focus: first field in the body, else the primary action, else the card
+  const focusTarget =
+    bodyWrap.querySelector('input:not([type="hidden"]), textarea, select, [contenteditable="true"]') ||
+    footWrap.querySelector('.btn-primary, .btn-danger') ||
+    card
+  setTimeout(() => focusTarget.focus(), 30)
 
   return api
 }
@@ -173,15 +194,16 @@ export function promptDialog({
       settled = true
       resolve(v)
     }
+    const inputId = `modal-input-${++modalSeq}`
     const input = el('input', {
       class: 'input',
-      attrs: { type: 'text', value, placeholder, spellcheck: 'false', autocomplete: 'off' },
+      attrs: { type: 'text', value, placeholder, spellcheck: 'false', autocomplete: 'off', id: inputId },
     })
     const errorNode = el('p', { class: 'field-error', style: { display: 'none' } })
     const body = el(
       'div',
       { class: 'field' },
-      label ? el('label', { class: 'field-label', text: label }) : null,
+      label ? el('label', { class: 'field-label', text: label, attrs: { for: inputId } }) : null,
       input,
       hint ? el('p', { class: 'field-hint', text: hint }) : null,
       errorNode,

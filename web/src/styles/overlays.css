@@ -1,0 +1,300 @@
+/* Modal, toast, secret/key display, skeletons. Owned by the "views" pass.
+ * Overlays float above the workspace: one hairline, one shadow, one accent bar. */
+
+/* ==================================================================== modal */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-6);
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+
+.modal-backdrop.in {
+  opacity: 1;
+}
+
+.modal-backdrop.out {
+  opacity: 0;
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  max-height: calc(100vh - var(--sp-8) * 2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(var(--sp-2));
+  transition:
+    opacity var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out);
+}
+
+.modal-backdrop.in .modal {
+  opacity: 1;
+  transform: none;
+}
+
+.modal-backdrop.out .modal {
+  opacity: 0;
+  transform: translateY(var(--sp-2));
+}
+
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  flex: 0 0 auto;
+  padding: var(--sp-5) var(--sp-5) var(--sp-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.modal-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modal-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+  color: var(--fg);
+}
+
+.modal-subtitle {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+.modal-close {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--line-soft);
+}
+
+/* A dialog whose body needs no breathing room (confirmations). */
+.modal-text {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+/* ================================================================== toasts */
+
+.toast-host {
+  position: fixed;
+  right: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+
+.toast {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  max-width: 380px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-pop);
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(var(--sp-1));
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+
+/* Left bar carries the only colour: ok / warn / danger. */
+.toast::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  border-radius: var(--r-md) 0 0 var(--r-md);
+  background: var(--fg-3);
+}
+
+.toast.in {
+  opacity: 1;
+  transform: none;
+}
+
+.toast.out {
+  opacity: 0;
+  transform: translateY(var(--sp-1));
+}
+
+.toast-info::before {
+  background: var(--fg-3);
+}
+
+.toast-success::before {
+  background: var(--ok);
+}
+
+.toast-warn::before {
+  background: var(--warn);
+}
+
+.toast-error::before {
+  background: var(--danger);
+}
+
+.toast-text {
+  min-width: 0;
+}
+
+.toast-text small {
+  display: block;
+  margin-top: var(--sp-1);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+}
+
+/* ============================================================ key / secret */
+
+.key-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.key-warning {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: color-mix(in oklab, var(--warn) 32%, var(--fg));
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+}
+
+.key-warning strong {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.key-label {
+  margin-top: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.key-box {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  letter-spacing: 0.02em;
+  word-break: break-all;
+  white-space: pre-wrap;
+  user-select: all;
+}
+
+.key-box-dim {
+  color: var(--fg-2);
+}
+
+.key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.secret-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow-x: auto;
+  user-select: all;
+}
+
+/* --------------------------------------------------------------- skeletons */
+
+/* .skeleton itself is defined in tokens.css; these are shapes only. */
+.skel-line {
+  display: block;
+  height: 8px;
+  border-radius: var(--r-xs);
+}
+
+.skel-line.is-short {
+  width: 40%;
+}
+
+.skel-line.is-mid {
+  width: 64%;
+}

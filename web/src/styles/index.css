@@ -1,0 +1,9 @@
+/* Stylesheet entry — tokens first, then one file per surface.
+ * Owners and rules: docs/design.md §9. */
+
+@import './tokens.css';
+@import './controls.css';
+@import './shell.css';
+@import './prose.css';
+@import './views.css';
+@import './overlays.css';

@@ -1,0 +1,858 @@
+/* Workspace shell: topbar, sidebar + tree, split panes, collaborator rail,
+ * status bar. Owned by the "shell" pass — see docs/design.md.
+ *
+ * Rules honoured here:
+ *   - every colour, size, gap and easing comes from tokens.css;
+ *   - structure is expressed with 1px hairlines, never card borders/shadows;
+ *   - only opacity / transform / colour are animated. */
+
+/* ==================================================================== frame */
+
+.view-app {
+  display: block;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr) var(--status-h);
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* The admin console reuses the topbar but has no status bar. */
+.app-shell.admin-shell {
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+}
+
+.app-body {
+  display: grid;
+  grid-template-columns: var(--tree-w) minmax(0, 1fr) var(--rail-w);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* =================================================================== topbar */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-width: 0;
+  padding-inline: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.brand-wordmark {
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.topbar-sep {
+  flex: 0 0 auto;
+  width: 3px;
+  height: 3px;
+  border-radius: var(--r-full);
+  background: var(--line);
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.crumb {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-3);
+}
+
+.crumb-current {
+  color: var(--fg);
+}
+
+.crumb-sep {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  opacity: 0.6;
+}
+
+.crumb-empty {
+  color: var(--fg-3);
+}
+
+/* Connection state: dot + word, never colour alone. */
+.conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 22px;
+  padding-inline: var(--sp-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-full);
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+
+.conn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--fg-3);
+}
+
+.conn-badge.is-online {
+  border-color: var(--accent-line);
+  color: var(--fg);
+}
+
+.conn-badge.is-online .conn-dot {
+  background: var(--accent);
+}
+
+.conn-badge.is-offline {
+  border-color: var(--danger-line);
+  color: var(--fg-2);
+}
+
+.conn-badge.is-offline .conn-dot {
+  background: var(--danger);
+}
+
+.save-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.save-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--fg-3);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.save-dot.is-saved {
+  background: var(--accent);
+}
+
+.save-dot.is-saving {
+  background: var(--warn);
+}
+
+.save-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-h-sm);
+  padding-inline: var(--sp-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-full);
+  background: var(--bg-2);
+  min-width: 0;
+}
+
+.user-name {
+  max-width: 140px;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ================================================================== sidebar */
+
+.sidebar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 34px;
+  flex: 0 0 auto;
+  padding-inline: var(--sp-2) var(--sp-1);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.sidebar-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+
+.sidebar-tools {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.sidebar-tools {
+  gap: 2px;
+}
+
+.sidebar-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tree-scroll {
+  height: 100%;
+  overflow: auto;
+  padding-block: var(--sp-2) var(--sp-4);
+}
+
+/* Drag handle on the right edge — 5px hit area, hairline affordance. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  width: 5px;
+  height: 100%;
+  background: transparent;
+  cursor: col-resize;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.is-dragging {
+  background: var(--accent-line);
+}
+
+/* Collapsed rail: only the icon strip stays. */
+.sidebar-rail {
+  display: none;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding-block: var(--sp-2);
+}
+
+.app-shell.sidebar-collapsed .sidebar-head,
+.app-shell.sidebar-collapsed .sidebar-body,
+.app-shell.sidebar-collapsed .sidebar-resizer {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .sidebar-rail {
+  display: flex;
+}
+
+/* ===================================================================== tree */
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 28px;
+  padding-right: var(--sp-2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-1) var(--ease-out);
+}
+
+.tree-row:hover {
+  background: var(--bg-2);
+}
+
+/* Directories read one step back so files stay the loudest thing in the tree. */
+.tree-row[data-kind='dir'] {
+  color: var(--fg-2);
+}
+
+.tree-row[data-kind='dir']:hover,
+.tree-row[data-kind='dir'].active {
+  color: var(--fg);
+}
+
+.tree-row.active {
+  background: var(--bg-3);
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tree-row:focus-visible {
+  outline-offset: -2px;
+}
+
+.tree-caret {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  transition: transform var(--dur-1) var(--ease-out);
+}
+
+.tree-caret.is-open {
+  transform: rotate(90deg);
+}
+
+.tree-caret.is-hidden {
+  visibility: hidden;
+}
+
+.tree-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.tree-svg {
+  display: inline-flex;
+}
+
+/* Rail toggle: shell-owned control for collapsing the whole sidebar. */
+.rail-toggle {
+  display: grid;
+  place-items: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.rail-toggle:hover {
+  background: var(--bg-2);
+  color: var(--fg);
+}
+
+.tree-row.is-dir .tree-name {
+  color: var(--fg-2);
+}
+
+.tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Row actions float above the presence dot: idle rows keep the dot visible,
+ * hover/focus swaps in the actions without shifting the name. */
+.tree-row-actions {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-1);
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding-inline: var(--sp-1);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.tree-row.active .tree-row-actions {
+  background: var(--bg-3);
+}
+
+.tree-row:hover .tree-row-actions,
+.tree-row:focus-within .tree-row-actions {
+  opacity: 1;
+}
+
+.tree-action {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.tree-action:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
+.tree-action-danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* Tree states: loading / empty / error */
+.tree-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.tree-skeleton .skeleton {
+  height: 16px;
+}
+
+.tree-state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-4) var(--sp-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+}
+
+.tree-state-title {
+  color: var(--fg-2);
+}
+
+.tree-state-hint {
+  color: var(--fg-3);
+}
+
+.tree-state-error {
+  color: var(--danger);
+}
+
+.tree-retry {
+  align-self: flex-start;
+  margin-top: var(--sp-1);
+}
+
+/* ================================================================ split panes */
+
+.center {
+  display: grid;
+  grid-template-columns: var(--split, 52%) 5px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.splitter {
+  position: relative;
+  cursor: col-resize;
+  background: var(--bg);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.splitter::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--line-soft);
+}
+
+.splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 -2px;
+}
+
+.splitter:hover,
+body.is-resizing .splitter {
+  background: var(--accent);
+}
+
+/* No background on .pane/.pane-body: the editor canvas (.editor-host) and the
+ * preview canvas (prose.css, --bg-preview) differ by one step on purpose. */
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 34px;
+  flex: 0 0 auto;
+  padding-inline: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.pane-title {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+
+.pane-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.pane-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-host {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg-editor);
+}
+
+.editor-host .cm-editor {
+  height: 100%;
+}
+
+.editor-host .monaco-editor,
+.editor-host .monaco-editor .overflow-guard {
+  border-radius: 0;
+}
+
+/* Empty editor pane: one sentence + the next step, no illustration. */
+.pane-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-5);
+  background: var(--bg-editor);
+}
+
+.pane-empty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 34ch;
+  text-align: center;
+}
+
+.pane-empty-icon {
+  color: var(--fg-3);
+  opacity: 0.45;
+}
+
+.pane-empty-title {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--fg-2);
+}
+
+.pane-empty-hint {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-3);
+}
+
+/* ========================================================= collaborator rail */
+
+.collab-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.collab-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 34px;
+  flex: 0 0 auto;
+  padding-inline: var(--sp-3);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.collab-title {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--fg-2);
+}
+
+.collab-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.collab-count-num {
+  color: var(--fg);
+}
+
+.collab-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-2);
+}
+
+.peer-row {
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: 2px;
+  width: 100%;
+  padding: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+
+.peer-row:hover {
+  background: var(--bg-2);
+}
+
+.peer-row.is-current {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.peer-row.is-me {
+  cursor: default;
+}
+
+.peer-row.is-me:hover {
+  background: transparent;
+}
+
+.peer-row.is-me .peer-name {
+  color: var(--fg);
+}
+
+.peer-row.is-new {
+  animation: peer-in var(--dur-2) var(--ease-out) both;
+}
+
+@keyframes peer-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.peer-dot {
+  align-self: start;
+  width: 6px;
+  height: 6px;
+  margin-top: var(--sp-1);
+  border-radius: var(--r-full);
+}
+
+.peer-name {
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.peer-tag {
+  margin-left: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+}
+
+.peer-cursor {
+  justify-self: end;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.peer-file {
+  grid-column: 2 / -1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.peer-file-name {
+  color: var(--fg-2);
+}
+
+.collab-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-5) var(--sp-3);
+  text-align: center;
+}
+
+.collab-empty-title {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+
+.collab-empty-hint {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+
+/* =============================================================== status bar */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding-inline: var(--sp-2);
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding-inline: var(--sp-3);
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding-inline: var(--sp-3);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.status-right .status-item + .status-item {
+  border-left: 1px solid var(--line-soft);
+}

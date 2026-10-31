@@ -1,5 +1,8 @@
 // Entry point: hash router + authentication gate.
-import './styles.css'
+import '@fontsource-variable/geist'
+import '@fontsource-variable/geist-mono'
+import '@fontsource-variable/space-grotesk'
+import './styles/index.css'
 import { api, setUnauthorizedHandler } from './net/api.js'
 import { toastError } from './ui/toast.js'
 import { mountLogin } from './views/login.js'

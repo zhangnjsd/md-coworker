@@ -384,9 +384,11 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
     }
 }
 
+// Presence palette: ten desaturated hues at a similar lightness, so a caret or
+// avatar dot stays legible on the dark slate UI without shouting over the text.
 const PALETTE: [&str; 10] = [
-    "#4f9cf9", "#f2a65a", "#7bd88f", "#e06c9f", "#b58cf0", "#5ad1c9", "#e9c46a", "#f4796b",
-    "#8fb3ff", "#c0a0ff",
+    "#70dbbc", "#80c7f8", "#c9b0fb", "#f89caa", "#f1bd73", "#74d3d8", "#a9d17f", "#dfa8e1",
+    "#fba98a", "#9fb0c9",
 ];
 
 fn pick_color(conn: &Connection, username: &str) -> String {

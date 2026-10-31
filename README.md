@@ -99,9 +99,24 @@ master.key (64B / 512bit, 128 hex 字符)
 
 ## 界面
 
-| 登录 | 工作区 | 管理后台 |
+| 登录 | 工作区（三人在同一份文档里） |
+| --- | --- |
+| ![登录](docs/screenshots/login.png) | ![工作区](docs/screenshots/editor.png) |
+
+| 代码文件（Monaco） | 设置 | 管理后台 |
 | --- | --- | --- |
-| ![登录](docs/screenshots/login.png) | ![工作区](docs/screenshots/editor.png) | ![后台](docs/screenshots/admin.png) |
+| ![代码](docs/screenshots/code.png) | ![设置](docs/screenshots/settings.png) | ![后台](docs/screenshots/admin.png) |
+
+## 设计
+
+界面方向叫 **Ink & Signal**：文档是主角，其余都是脚手架；协作用同一套 presence 圆点表达（顶栏、文件树、协作者栏、编辑器光标同色）；技术感来自等宽元信息排版，而不是装饰。
+
+- **字体**：正文/UI 用 **Geist**，标题与品牌用 **Space Grotesk**，代码与元信息用 **Geist Mono**（三者都随前端本地打包，无外部 CDN；中文回退到 PingFang / 思源黑体）。
+- **颜色**：全部用 **OKLCH** 定义在 `web/src/styles/tokens.css`，中性色带蓝调（墨蓝 slate，不用纯黑/纯灰），唯一强调色是青玉 `oklch(0.82 0.12 172)`。源码画布比面板深一档、预览画布比面板亮一档，读者的视线自然落到渲染后的文档上。
+- **动效**：`cubic-bezier(0.16, 1, 0.3, 1)`，微交互 120–180ms、弹层 320ms，并尊重 `prefers-reduced-motion`。
+- **可访问性**：全键盘可达，focus 永久可见（2px 强调色 ring），加载用 skeleton 而不是转圈，错误文案给出下一步。
+
+完整规范（色表、间距、组件、文案、文件归属与验收清单）在 [`docs/design.md`](docs/design.md)；样式按 `tokens / controls / shell / prose / views / overlays` 六个模块拆分在 `web/src/styles/`。
 
 ## 项目结构
 
@@ -118,9 +133,11 @@ src/
   collab.rs    WebSocket + yrs 文档房间 + 落盘 + presence
   api.rs       路由装配、静态资源托管
 web/           前端（Vite + 原生 ES modules）
-tools/         端到端冒烟测试
+  src/styles/  六份 CSS：tokens / controls / shell / prose / views / overlays
+tools/         端到端冒烟测试（smoke）、真浏览器测试（browser）、截图（shots）
 demo-workspace/ 示例工作区
 docs/protocol.md 前后端协议契约
+docs/design.md   前端视觉/交互规范
 ```
 
 ## 测试
