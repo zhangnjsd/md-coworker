@@ -8,6 +8,16 @@ import nacl from 'tweetnacl';
 
 const BASE = process.env.MC_BASE || process.argv[2] || 'http://127.0.0.1:3000';
 const KEY_FILE = process.argv[3] || 'data/bootstrap-admin.key';
+const WS_ROOT = process.env.MC_WS_ROOT || 'demo-workspace';
+// The collaborating tests type into the document they opened, so they work on a
+// file this script owns instead of the demo workspace's own documents.
+const SCRATCH = 'collab-sync-test.md';
+const SCRATCH_IMAGE = 'collab-sync-test.png';
+// 1x1 PNG: enough to prove the raw endpoint serves image bytes to the preview.
+const PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+  'base64',
+);
 const CHROME =
   process.env.MC_CHROME ||
   ['/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium'].find((p) => fs.existsSync(p));
@@ -39,6 +49,16 @@ async function apiLogin(username, privateKeyB64) {
   const cookie = (res.headers.getSetCookie?.() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('mc_sid='));
   return { cookie, data: await res.json() };
 }
+async function apiUpload(cookie, dir, name, body, type = 'text/markdown') {
+  const form = new FormData();
+  form.set('file', new File([body], name, { type }));
+  const res = await fetch(
+    `${BASE}/api/files/upload?dir=${encodeURIComponent(dir)}&overwrite=1`,
+    { method: 'POST', headers: { cookie }, body: form },
+  );
+  return { status: res.status, data: await res.json().catch(() => null) };
+}
+
 async function createUser(cookie, username) {
   const res = await fetch(`${BASE}/api/admin/users`, {
     method: 'POST',
@@ -180,9 +200,53 @@ async function main() {
   check('预览渲染 Mermaid 图表', preview.mermaid);
   check('预览渲染代码高亮', preview.code);
 
-  // The demo document embeds assets/architecture.png with a relative path.
-  // Lazy loading means it only starts once visible, so scroll to it first.
-  const image = await pageA.evaluate(async () => {
+  // The demo document embeds an image with a relative path. Only the rewrite is
+  // asserted here: whether the asset itself still exists is the workspace
+  // owner's business. The scratch document below proves the bytes really load.
+  const imageSrc = await pageA.evaluate(
+    () => document.querySelector('.markdown-body img')?.getAttribute('src') || '',
+  );
+  check(
+    '预览把相对图片改写到 /api/raw',
+    imageSrc.startsWith('/api/raw?path=') && !imageSrc.includes('..'),
+    imageSrc,
+  );
+  await pageA.screenshot({ path: '/tmp/shot-editor.png' });
+
+  console.log('\n=== 2b. 滚动同步 ===');
+  const scratchBody = [
+    '# 协作同步测试文档',
+    '',
+    '> 本文件由 `tools/browser.mjs` 自动创建，跑完会删除。',
+    '',
+    `![](${SCRATCH_IMAGE})`,
+    '',
+    ...Array.from(
+      { length: 40 },
+      (_, i) => `## 第 ${i + 1} 节\n\n这一节只为把文档撑长，好让滚动同步和光标位置有东西可测。\n`,
+    ),
+    '- 第一项',
+    '- 第二项',
+    '- 第三项',
+    '',
+  ].join('\n');
+  const scratchImage = await apiUpload(adminApi.cookie, '', SCRATCH_IMAGE, PIXEL_PNG, 'image/png');
+  check('创建测试图片', scratchImage.status === 201, `HTTP ${scratchImage.status}`);
+  const scratch = await apiUpload(adminApi.cookie, '', SCRATCH, scratchBody);
+  check('创建协作文档测试文件', scratch.status === 201, `HTTP ${scratch.status}`);
+  // The file was created through the API, so the tree has to be told about it.
+  await pageA.evaluate(() => {
+    document.querySelector('.icon-btn[aria-label="刷新文件树"]')?.click();
+  });
+  const scratchListed = await pageA
+    .waitForFunction((name) => !!document.querySelector(`.tree-row[data-path="${name}"]`), { timeout: 15000 }, SCRATCH)
+    .then(() => true)
+    .catch(() => false);
+  check('测试文件出现在文件树里', scratchListed);
+  await openFile(pageA, SCRATCH);
+  await pageA.waitForSelector('.cm-content', { timeout: 15000 });
+  await sleep(900);
+  const loadedImage = await pageA.evaluate(async () => {
     const img = document.querySelector('.markdown-body img');
     if (!img) return null;
     img.scrollIntoView({ block: 'center' });
@@ -193,14 +257,10 @@ async function main() {
     return { src: img.getAttribute('src') || '', width: img.naturalWidth, height: img.naturalHeight };
   });
   check(
-    '预览把相对图片改写到 /api/raw',
-    !!image && image.src.startsWith('/api/raw?path=assets%2Farchitecture.png'),
-    JSON.stringify(image),
+    '静态图片经 /api/raw 真的加载出来了',
+    !!loadedImage && loadedImage.width > 0 && loadedImage.height > 0,
+    JSON.stringify(loadedImage),
   );
-  check('上传/静态图片真的加载出来了', !!image && image.width > 0 && image.height > 0, JSON.stringify(image));
-  await pageA.screenshot({ path: '/tmp/shot-editor.png' });
-
-  console.log('\n=== 2b. 滚动同步 ===');
   const scrollState = () =>
     pageA.evaluate(() => {
       const scroller = document.querySelector('.cm-scroller');
@@ -275,11 +335,11 @@ async function main() {
   console.log('\n=== 3. 第二个用户（页面 B）加入同一文件 ===');
   const pageB = await ctxB.newPage();
   await login(pageB, bobName, bobUser.private_key);
-  await openFile(pageB, 'README.md');
+  await openFile(pageB, SCRATCH);
   await pageB.waitForSelector('.cm-content', { timeout: 15000 });
   await pageB.waitForFunction(() => {
     const el = document.querySelector('.cm-content');
-    return el && el.innerText.includes('md-coworker 示例工作区');
+    return el && el.innerText.includes('协作同步测试文档');
   }, { timeout: 15000 });
   check('第二个用户看到同一份文档', true);
 
@@ -320,11 +380,16 @@ async function main() {
   const peerInfo = await pageB.evaluate(() => document.querySelector('.collab-list')?.innerText || '');
   // The panel prints the caret as "行 12, 列 4" (older builds used "12:4").
   const caretShape = /(\d+\s*:\s*\d+|行\s*\d+,\s*列\s*\d+)/;
-  check('协作者面板显示文件与行号', /README\.md/.test(peerInfo) && caretShape.test(peerInfo), JSON.stringify(peerInfo));
+  check(
+    '协作者面板显示文件与行号',
+    peerInfo.includes(SCRATCH) && caretShape.test(peerInfo),
+    JSON.stringify(peerInfo),
+  );
   const treeMark = await pageB
     .waitForFunction(
-      () => !!document.querySelector('.tree-row[data-path="README.md"] .tree-presence-dot'),
+      (name) => !!document.querySelector(`.tree-row[data-path="${name}"] .tree-presence-dot`),
       { timeout: 15000 },
+      SCRATCH,
     )
     .then(() => true)
     .catch(() => false);
@@ -360,7 +425,7 @@ async function main() {
 
   console.log('\n=== 7. 实时保存 ===');
   await sleep(1200);
-  const onDisk = fs.readFileSync(process.env.MC_WS_FILE || '/tmp/ws-browser/README.md', 'utf8');
+  const onDisk = fs.readFileSync(`${WS_ROOT}/${SCRATCH}`, 'utf8');
   check('磁盘文件包含 B 的编辑', onDisk.includes(bobMarker));
   check('磁盘文件不再包含 A 被撤销的编辑', !onDisk.includes(marker));
 
@@ -371,12 +436,16 @@ async function main() {
   await pageB.keyboard.press('KeyZ');
   await pageB.keyboard.up('Control');
   await sleep(1400);
-  const cleaned = fs.readFileSync(process.env.MC_WS_FILE || '/tmp/ws-browser/README.md', 'utf8');
+  const cleaned = fs.readFileSync(`${WS_ROOT}/${SCRATCH}`, 'utf8');
   check(
     '双方撤回后磁盘不再包含测试标记',
     !cleaned.includes(bobMarker) && !cleaned.includes(marker),
     cleaned.slice(-80),
   );
+
+  // Page B is no longer needed: dropping it closes its last room so the scratch
+  // document can be deleted during cleanup.
+  await ctxB.close();
 
   console.log('\n=== 8. 代码文件用 Monaco 打开 ===');
   await openFile(pageA, 'notes/code-sample.rs');
@@ -409,7 +478,7 @@ async function main() {
   console.log('\n=== 8b. 拖拽上传（真实 UI 事件）===');
   const uploadName = `upload-${Date.now().toString(36)}.md`;
   const uploadBody = `# ${uploadName}\n\n从界面拖进来的示例文件。\n`;
-  const wsRoot = process.env.MC_WS_ROOT || 'demo-workspace';
+  const wsRoot = WS_ROOT;
 
   const overlay = await pageA.evaluate(async (name) => {
     const dt = new DataTransfer();
@@ -472,13 +541,13 @@ async function main() {
   await sleep(1000);
 
   // Clean up through the API so repeated runs stay idempotent.
-  for (const path of [uploadName, buttonName]) {
+  for (const path of [SCRATCH, SCRATCH_IMAGE, uploadName, buttonName]) {
     const delUpload = await fetch(`${BASE}/api/files/delete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: adminApi.cookie },
       body: JSON.stringify({ path }),
     });
-    check(`清理上传的 ${path}`, delUpload.ok, `HTTP ${delUpload.status}`);
+    check(`清理测试文件 ${path}`, delUpload.ok, `HTTP ${delUpload.status}`);
   }
 
   console.log('\n=== 9. 管理员页面 ===');
