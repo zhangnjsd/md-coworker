@@ -199,6 +199,21 @@
 
 ---
 
+## 9.1 上传相关组件（v1.2）
+
+| 组件 | 规则 |
+| --- | --- |
+| 上传按钮 | `.sidebar-tools` 里的 `.icon-btn`（`aria-label="上传文件"`），收起侧栏时在 `.sidebar-rail` 里保留一个；快捷键 `Mod+Shift+U` |
+| 目标目录 | 取文件树当前选中项：选中目录用它自己、选中文件用其父目录、未选中用工作区根（文案「工作区根目录」）；选中项用与打开文件相同的 `--bg-3` + inset 2px accent 表达 |
+| 拖拽遮罩 | `.drop-overlay`（`position:fixed`、z-index 90、`pointer-events:none`），只播 opacity 与 8px translateY，`dragenter/dragleave` 计数避免抖动；文案给出「目标目录 + 单文件上限 + 批次上限」三件事 |
+| 进度 | `.upload-progress`：文件名 + 百分比 + 细轨道（`transform: scaleX()`，不用 width），`role="progressbar"` + `aria-valuenow`/`aria-valuetext`；未知总长时显示不确定态 |
+| 409 覆盖 | 只在 `file_exists` 时用 `confirmDialog` 询问（列出具体路径），确认后对同批 `overwrite=1` 重试 |
+| 管理台「上传限制」 | `.admin-settings` 作为用户列表的兄弟面板（同一 surface、hairline 分隔，不再套盒子）；输入 MiB、实时换算字节、非法值禁用保存并给 `role=alert` 文案；加载用与表单同几何的 skeleton |
+| 单位 | 一律二进制单位 MiB / KiB（`10 MiB = 10485760 字节`），不写 MB |
+| 预览图片 | 相对路径改写成 `/api/raw?path=…`，`loading="lazy"`；`http(s)`、`data:`、站内绝对路径原样保留 |
+
+---
+
 ## 10. 验收
 
 1. `npx vite --port 51xx` 打开后：登录页 / 工作区 / 管理员页 / 设置弹窗 四屏无一处硬编码颜色（`grep -n "#[0-9a-fA-F]\{3,6\}" styles/*.css` 只允许出现在 tokens.css 的注释里）。

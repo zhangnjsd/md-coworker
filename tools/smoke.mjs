@@ -46,6 +46,38 @@ class Client {
     try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
     return { status: res.status, data };
   }
+  /** Multipart upload; `files` is a list of { name, bytes, type? }. */
+  async upload(dir, files, overwrite = false) {
+    const form = new FormData();
+    for (const file of files) {
+      form.append('file', new Blob([file.bytes], { type: file.type || 'application/octet-stream' }), file.name);
+    }
+    const params = new URLSearchParams();
+    if (dir) params.set('dir', dir);
+    if (overwrite) params.set('overwrite', '1');
+    const qs = params.toString();
+    const headers = {};
+    if (this.cookie) headers.cookie = this.cookie;
+    const res = await fetch(`${BASE}/api/files/upload${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+    return { status: res.status, data };
+  }
+
+  /** Raw bytes of a workspace file. */
+  async raw(path) {
+    const headers = {};
+    if (this.cookie) headers.cookie = this.cookie;
+    const res = await fetch(`${BASE}/api/raw?path=${encodeURIComponent(path)}`, { headers });
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { status: res.status, type: res.headers.get('content-type'), disposition: res.headers.get('content-disposition'), bytes: buf };
+  }
+
   async login(username, privateKeyB64, totp) {
     const ch = await this.req('POST', '/api/auth/challenge', { username });
     if (ch.status !== 200) throw new Error(`challenge failed: ${ch.status} ${JSON.stringify(ch.data)}`);
@@ -311,6 +343,74 @@ async function main() {
   check('删除文件成功', del.status === 200);
   const missing = await newKeyLogin.req('GET', `/api/file?path=notes/t-${suffix}-renamed.md`);
   check('删除后读取返回 404', missing.status === 404);
+
+  console.log('\n=== 10.5 上传与原始资源 ===');
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const uploadPath = `assets/up-${suffix}.png`;
+  const up = await newKeyLogin.upload('assets', [{ name: `up-${suffix}.png`, bytes: PNG, type: 'image/png' }]);
+  check(
+    '上传图片成功并返回 kind/url',
+    up.status === 201 && up.data.files?.[0]?.path === uploadPath && up.data.files[0].kind === 'image' &&
+      up.data.files[0].url === `/api/raw?path=${encodeURIComponent(uploadPath)}`,
+    JSON.stringify(up.data),
+  );
+  check('上传的文件真的落盘', fs.existsSync(`${WS_ROOT}/${uploadPath}`) && fs.statSync(`${WS_ROOT}/${uploadPath}`).size === PNG.length);
+
+  const dupUpload = await newKeyLogin.upload('assets', [{ name: `up-${suffix}.png`, bytes: PNG, type: 'image/png' }]);
+  check('同名文件重复上传返回 409', dupUpload.status === 409 && dupUpload.data.error?.code === 'file_exists');
+
+  const over = await newKeyLogin.upload('assets', [{ name: `up-${suffix}.png`, bytes: PNG, type: 'image/png' }], true);
+  check('overwrite=1 时覆盖成功', over.status === 201);
+
+  const rawRes = await newKeyLogin.raw(uploadPath);
+  check(
+    '原始资源按图片类型返回且字节一致',
+    rawRes.status === 200 && rawRes.type === 'image/png' && rawRes.bytes.equals(PNG) && /inline/.test(rawRes.disposition || ''),
+    `${rawRes.status} ${rawRes.type}`,
+  );
+  const rawMissing = await newKeyLogin.raw(`assets/nope-${suffix}.png`);
+  check('读取不存在的原始资源返回 404', rawMissing.status === 404);
+
+  const badName = await newKeyLogin.upload('assets', [{ name: '.hidden.txt', bytes: Buffer.from('x') }]);
+  check('拒绝隐藏文件名 400 bad_filename', badName.status === 400 && badName.data.error?.code === 'bad_filename');
+
+  const traversalName = await newKeyLogin.upload('assets', [{ name: '../escape.txt', bytes: Buffer.from('x') }]);
+  check(
+    '带 ../ 的文件名被收敛到目标目录',
+    traversalName.status === 201 && traversalName.data.files[0].path === 'assets/escape.txt',
+    JSON.stringify(traversalName.data),
+  );
+  await newKeyLogin.req('POST', '/api/files/delete', { path: 'assets/escape.txt' });
+
+  const publicSettings = await newKeyLogin.req('GET', '/api/settings');
+  check('普通用户可读上传上限', publicSettings.status === 200 && publicSettings.data.max_upload_bytes === 10 * 1024 * 1024);
+
+  const forbidPatch = await newKeyLogin.req('PATCH', '/api/admin/settings', { max_upload_bytes: 2048 });
+  check('普通用户改上限被拒绝 (403)', forbidPatch.status === 403);
+
+  const badLimit = await admin.req('PATCH', '/api/admin/settings', { max_upload_bytes: 10 });
+  check('越界上限被拒绝 400 bad_limit', badLimit.status === 400 && badLimit.data.error?.code === 'bad_limit');
+
+  const shrink = await admin.req('PATCH', '/api/admin/settings', { max_upload_bytes: 1024 * 1024 });
+  check('管理员可以把上限调小', shrink.status === 200 && shrink.data.settings.max_upload_bytes === 1024 * 1024);
+
+  const bigBytes = Buffer.alloc(1024 * 1024 + 4096, 7);
+  const big = await newKeyLogin.upload('assets', [{ name: `big-${suffix}.bin`, bytes: bigBytes }]);
+  check(
+    '超过上限的文件返回 413 且指明上限',
+    big.status === 413 && big.data.error?.code === 'too_large' && /1 MiB/.test(big.data.error?.message || ''),
+    JSON.stringify(big.data),
+  );
+  const leftovers = fs.readdirSync(`${WS_ROOT}/assets`).filter((name) => name.startsWith('.mc-upload-'));
+  check('超限上传没有留下临时文件', leftovers.length === 0 && !fs.existsSync(`${WS_ROOT}/assets/big-${suffix}.bin`));
+
+  const restore = await admin.req('PATCH', '/api/admin/settings', { max_upload_bytes: 10 * 1024 * 1024 });
+  check('上限恢复为 10 MiB', restore.status === 200);
+  const delUp = await newKeyLogin.req('POST', '/api/files/delete', { path: uploadPath });
+  check('清理上传的测试文件', delUp.status === 200);
 
   console.log('\n=== 11. 管理员清理 ===');
   const delUser = await admin.req('DELETE', `/api/admin/users/${cb.data.user.id}`);

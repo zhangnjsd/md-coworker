@@ -120,6 +120,21 @@ for (let i = 0; i < 16; i++) await peers[1].page.keyboard.press('ArrowDown');
 await sleep(1600);
 await pA.screenshot({ path: `${OUT}/editor.png` });
 
+// --- upload drop overlay (same events a desktop drag fires) ---
+await pA.evaluate(async () => {
+  const dt = new DataTransfer();
+  dt.items.add(new File(['# 拖进来的文件\n'], 'screenshot.md', { type: 'text/markdown' }));
+  document.querySelector('.app-shell').dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer: dt }));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+});
+await sleep(400);
+await pA.screenshot({ path: `${OUT}/upload.png` });
+await pA.evaluate(() => {
+  document.querySelector('.app-shell').dispatchEvent(new DragEvent('dragleave', { bubbles: true, dataTransfer: new DataTransfer() }));
+  window.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: new DataTransfer() }));
+});
+await sleep(400);
+
 // --- settings dialog ---
 await pA.evaluate(() => {
   const btn = [...document.querySelectorAll('button')].find((b) =>

@@ -3,6 +3,7 @@
 基于 **Axum** 的实时协作 Markdown 工作区：密钥对登录（可选 TOTP 2FA）、左侧编辑 / 右侧预览、
 可折叠文件树，以及对任意文本文件使用 Monaco（VSCode 同源编辑器）在线编辑。
 协作部分使用 **CRDT（Yjs ⇄ yrs）**，编辑内容实时保存，**无需手动保存**，且撤销只作用于自己的编辑。
+图片、PDF、代码等附件可以直接拖进窗口上传，单文件大小上限由管理员设置。
 
 ```
 浏览器 (CodeMirror 6 / Monaco + Yjs)
@@ -75,6 +76,19 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 而是用 VSCode 的编辑器内核 Monaco 承担代码编辑，Markdown 用更轻的 CodeMirror 6，
 两者都接同一个 Yjs 文档，从而共享同一套协作/保存链路。仅适配桌面端（≥1024px）。
 
+## 文件上传
+
+- 三种入口：拖拽文件到窗口任意位置、文件树右上角的上传按钮、`Mod+Shift+U`。目标目录取当前选中的
+  文件所在目录（选中目录则用它自己，没有选中就是工作区根）。
+- 上传按块流式写入临时文件，超过上限立刻中断并删除临时文件，**不会留下半个文件**；写入完成后
+  才原子 `rename` 到位。同名文件默认报 `409`，确认后可以覆盖。
+- 上限由管理员在「用户管理 → 上传限制」里设置，存于 PostgreSQL 的 `settings.max_upload_bytes`，
+  默认 10 MiB，范围 1 KiB–512 MiB；普通用户通过 `GET /api/settings` 读取同一个值，前端上传前先自检。
+- 支持的附件不限于图片：`/api/raw` 按扩展名（必要时按魔数）返回正确的 `Content-Type`，
+  未知类型按 `application/octet-stream` + `attachment` 下发；SVG 额外加 `sandbox` CSP，防止内联脚本。
+- Markdown 里的相对图片路径（`![](assets/x.png)`）在预览时会被改写成 `/api/raw?path=…`，
+  `http(s)://`、`data:` 与站内绝对路径保持原样。
+
 ## 协作模型
 
 - 每个文件在服务端对应一个 `yrs::Doc`（Yjs 的 Rust 实现），根 Y.Text 名为 `content`，是全量历史。
@@ -91,6 +105,10 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 - 路径参数一律按工作区根目录解析，拒绝 `..`、绝对路径与符号链接逃逸。
 - 参与协作的文件在有人编辑时禁止重命名 / 删除（返回 `409 file_busy`），避免文档与磁盘错位。
 - 2FA 种子、CRDT 快照等在磁盘/数据库里都是密文；主密钥 `data/master.key` 权限 0600。
+- 上传只接受文件名最后一段（`/`、`\` 之后的部分），拒绝空名、`.`、`..`、以 `.` 开头的隐藏名与超长名；
+  上传大小在流式写入时按管理员设定逐块校验，超限即中断。
+- `/api/raw` 需要登录态，一律带 `X-Content-Type-Options: nosniff`；SVG 带
+  `Content-Security-Policy: …; sandbox`，不会以本站身份执行脚本。
 - 会话令牌在数据库里也只存 SHA-256；`sessions` / `challenges` / `mfa_tickets` 都带过期时间，
   过期即失效并由后台任务回收。
 
@@ -117,6 +135,7 @@ master.key (64B / 512bit, 128 hex 字符)
 | `sessions` | 会话令牌的 SHA-256、创建/过期时间 | 过期即失效，后台 10 分钟回收 |
 | `challenges` | 登录挑战 nonce（一次性） | 验签后立即删除 |
 | `mfa_tickets` | 通过第一因子后签发的 2FA 票据 | 用完即删 / 5 分钟过期 |
+| `settings` | 管理员可调的运行时配置（当前是上传大小上限） | 有默认值，随时可改 |
 
 表结构由 `src/db.rs` 里的 `CREATE TABLE IF NOT EXISTS` 在启动时保证，`just db-status` 可以随时查看。
 
@@ -126,9 +145,13 @@ master.key (64B / 512bit, 128 hex 字符)
 | --- | --- |
 | ![登录](docs/screenshots/login.png) | ![工作区](docs/screenshots/editor.png) |
 
-| 代码文件（Monaco） | 设置 | 管理后台 |
-| --- | --- | --- |
-| ![代码](docs/screenshots/code.png) | ![设置](docs/screenshots/settings.png) | ![后台](docs/screenshots/admin.png) |
+| 代码文件（Monaco） | 设置 |
+| --- | --- |
+| ![代码](docs/screenshots/code.png) | ![设置](docs/screenshots/settings.png) |
+
+| 拖拽上传 | 管理后台（含上传上限） |
+| --- | --- |
+| ![上传](docs/screenshots/upload.png) | ![后台](docs/screenshots/admin.png) |
 
 ## 设计
 
@@ -153,6 +176,8 @@ src/
   auth.rs      登录、2FA、密钥轮换
   admin.rs     用户管理
   files.rs     工作区文件树与读写（安全路径解析）
+  upload.rs    流式上传（临时文件 + 原子改名）与 /api/raw 原始资源
+  settings.rs  管理员可调的运行时配置（上传大小上限）
   collab.rs    WebSocket + yrs 文档房间 + 保存 + presence
   api.rs       路由装配、静态资源托管
 web/           前端（Vite + 原生 ES modules）
@@ -169,6 +194,7 @@ docs/design.md   前端视觉/交互规范
 just test        # 单元测试：HKDF / AES / Ed25519 / base32 / TOTP
 just smoke       # 端到端接口 + WebSocket：登录、文件、双客户端协作、presence、2FA、密钥轮换
 just browser     # 真浏览器（Chromium）双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
+# smoke 里还包含上传相关断言：类型/大小、同名 409、覆盖、越界 413、临时文件不残留、上限增删
 ```
 
 `smoke` / `browser` 需要服务已在 `BIND`（默认 `127.0.0.1:3000`）上运行，
