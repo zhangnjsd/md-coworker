@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::crypto;
 
-// ---------------------------------------------------------------- 角色
+// ---------------------------------------------------------------- roles
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,7 +45,7 @@ impl Role {
     }
 }
 
-// ---------------------------------------------------------------- 用户
+// ---------------------------------------------------------------- users
 
 #[derive(Debug, Clone)]
 pub struct UserRow {
@@ -61,12 +61,11 @@ pub struct UserRow {
 
 #[derive(Debug, Clone)]
 pub struct ChallengeRow {
-    pub id: String,
     pub user_id: String,
     pub nonce: Vec<u8>,
 }
 
-// ---------------------------------------------------------------- 时间
+// ---------------------------------------------------------------- time
 
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -76,7 +75,7 @@ pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-// ---------------------------------------------------------------- 连接
+// ---------------------------------------------------------------- connection
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -131,7 +130,7 @@ impl Db {
         self.conn.lock().expect("SQLite 连接互斥量被毒化")
     }
 
-    // ------------------------------------------------------------ 用户
+    // ------------------------------------------------------------ users
 
     pub fn count_users(&self) -> Result<i64> {
         let conn = self.conn();
@@ -233,7 +232,7 @@ impl Db {
         Ok(())
     }
 
-    // ------------------------------------------------------------ 会话
+    // ------------------------------------------------------------ sessions
 
     pub fn create_session(&self, user_id: &str, ttl_secs: i64) -> Result<String> {
         let token = crypto::random_token();
@@ -273,7 +272,7 @@ impl Db {
         Ok(())
     }
 
-    // ------------------------------------------------------------ 登录挑战
+    // ------------------------------------------------------------ login challenges
 
     pub fn create_challenge(&self, user_id: &str, nonce: &[u8], ttl_secs: i64) -> Result<String> {
         let id = Uuid::new_v4().to_string();
@@ -282,7 +281,7 @@ impl Db {
             "INSERT INTO challenges (id, user_id, nonce, expires_at) VALUES (?1, ?2, ?3, ?4)",
             params![id, user_id, nonce, now_ms() + ttl_secs * 1000],
         )?;
-        // 顺手清理过期挑战
+        // Also drop expired challenges.
         conn.execute(
             "DELETE FROM challenges WHERE expires_at <= ?1",
             params![now_ms()],
@@ -290,18 +289,17 @@ impl Db {
         Ok(id)
     }
 
-    /// 一次性消费挑战（无论成败都会删除）。
+    /// Consume a challenge once; it is deleted either way.
     pub fn consume_challenge(&self, id: &str) -> Result<Option<ChallengeRow>> {
         let conn = self.conn();
         let row = conn
             .query_row(
-                "SELECT id, user_id, nonce FROM challenges WHERE id = ?1 AND expires_at > ?2",
+                "SELECT user_id, nonce FROM challenges WHERE id = ?1 AND expires_at > ?2",
                 params![id, now_ms()],
                 |row| {
                     Ok(ChallengeRow {
-                        id: row.get(0)?,
-                        user_id: row.get(1)?,
-                        nonce: row.get(2)?,
+                        user_id: row.get(0)?,
+                        nonce: row.get(1)?,
                     })
                 },
             )
@@ -310,7 +308,7 @@ impl Db {
         Ok(row)
     }
 
-    // ------------------------------------------------------------ 2FA 票据
+    // ------------------------------------------------------------ 2FA tickets
 
     pub fn create_mfa_ticket(&self, user_id: &str, ttl_secs: i64) -> Result<String> {
         let id = Uuid::new_v4().to_string();
@@ -322,7 +320,8 @@ impl Db {
         Ok(id)
     }
 
-    /// 取出票据对应的用户（不删除，允许同一票据下重试验证码，过期即失效）。
+    /// Look up the user behind a ticket. The ticket is kept so the code can be
+    /// retried, and it stops working once it expires.
     pub fn mfa_ticket_user(&self, ticket: &str) -> Result<Option<UserRow>> {
         let conn = self.conn();
         let row = conn
@@ -397,7 +396,7 @@ fn pick_color(conn: &Connection, username: &str) -> String {
     if count <= 0 {
         return PALETTE[0].to_string();
     }
-    // 用用户名哈希 + 已有用户数打散，避免同名不同人撞色
+    // Spread colours by username hash and user count, so different users rarely collide.
     let hash = username
         .bytes()
         .fold(0u64, |acc, b| acc.wrapping_mul(131).wrapping_add(b as u64));

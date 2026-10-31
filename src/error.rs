@@ -12,10 +12,10 @@ use axum::{
 };
 use serde_json::json;
 
-/// 统一 API 返回类型。
+/// Uniform API return type.
 pub type ApiResult<T> = Result<T, AppError>;
 
-/// 带 HTTP 语义的错误。包装了任意 [`anyhow::Error`]。
+/// An error with HTTP semantics, wrapping any [`anyhow::Error`].
 #[derive(Debug)]
 pub struct AppError {
     status: StatusCode,
@@ -62,20 +62,6 @@ impl AppError {
             cause: Some(error),
         }
     }
-
-    /// 附加/替换底层原因，便于在 `?` 之后补充上下文。
-    pub fn with_cause(mut self, error: anyhow::Error) -> Self {
-        self.cause = Some(error);
-        self
-    }
-
-    pub fn status(&self) -> StatusCode {
-        self.status
-    }
-
-    pub fn code(&self) -> &str {
-        &self.code
-    }
 }
 
 impl std::fmt::Display for AppError {
@@ -96,10 +82,11 @@ impl std::error::Error for AppError {
     }
 }
 
-/// 内部错误 → 500。保留 anyhow context 链。
+/// Internal error -> 500, preserving the anyhow context chain.
 impl From<anyhow::Error> for AppError {
     fn from(error: anyhow::Error) -> Self {
-        // 已经带 HTTP 语义的错误直接透传（anyhow::Error 内部也可能包着 AppError）。
+        // Errors that already carry HTTP semantics pass straight through (an
+        // anyhow::Error may itself wrap an AppError).
         if let Some(http) = error.downcast_ref::<AppError>() {
             return AppError {
                 status: http.status,
@@ -146,7 +133,7 @@ impl IntoResponse for AppError {
     }
 }
 
-/// 便捷宏：在 handler 里构造带状态码的错误。
+/// Convenience macro: build a status-coded error inside a handler.
 #[macro_export]
 macro_rules! bail_status {
     ($status:expr, $code:literal, $($arg:tt)*) => {

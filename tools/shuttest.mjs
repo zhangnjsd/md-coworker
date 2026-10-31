@@ -23,7 +23,7 @@ await new Promise(r => ws.on('message', raw => {
 }));
 doc.getText('content').insert(0, 'SHUTDOWN-FLUSH-MARK\n');
 ws.send(JSON.stringify({t:'update', path:'README.md', update: Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64')}));
-// 立刻发 SIGTERM，验证优雅退出会把未落盘的内容刷到磁盘
+// Send SIGTERM right away to verify graceful shutdown flushes unsaved content to disk
 await new Promise(r => setTimeout(r, 120));
 try { execSync("pkill -f md-coworker", { stdio: "ignore" }); } catch (e) { console.log("pkill:", e.status); }
 await new Promise(r => setTimeout(r, 1500));

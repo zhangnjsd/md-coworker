@@ -26,17 +26,17 @@ md-coworker —— 实时协作 Markdown 工作区
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// 工作区根目录（启动参数第一个位置参数，已 canonicalize）。
+    /// Workspace root (first positional argument, already canonicalized).
     pub workspace: PathBuf,
-    /// 数据目录。
+    /// Data directory.
     pub data_dir: PathBuf,
-    /// 前端静态资源目录。
+    /// Frontend build output directory.
     pub static_dir: PathBuf,
-    /// 监听地址。
+    /// Bind address.
     pub bind: SocketAddr,
-    /// 512 bit（64 字节）主密钥材料，用于派生 AES-256 数据密钥。
+    /// 512-bit (64-byte) master key material; the AES-256 data key is derived from it.
     pub master_key: Vec<u8>,
-    /// 会话有效期。
+    /// Session lifetime.
     pub session_ttl: Duration,
 }
 
@@ -112,7 +112,7 @@ impl Config {
     }
 }
 
-/// 读取（或首次生成）512 bit 主密钥。文件权限 0600。
+/// Read (or generate on first run) the 512-bit master key. File mode is 0600.
 fn load_or_create_master_key(data_dir: &Path) -> Result<Vec<u8>> {
     let path = data_dir.join("master.key");
     if path.exists() {

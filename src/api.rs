@@ -19,7 +19,7 @@ use tower_http::{
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/health", get(health))
-        // --- 认证 ---
+        // --- authentication ---
         .route("/auth/challenge", post(auth::challenge))
         .route("/auth/login", post(auth::login))
         .route("/auth/mfa", post(auth::verify_mfa))
@@ -29,7 +29,7 @@ pub fn router(state: AppState) -> Router {
         .route("/me/2fa/setup", post(auth::totp_setup))
         .route("/me/2fa/enable", post(auth::totp_enable))
         .route("/me/2fa/disable", post(auth::totp_disable))
-        // --- 管理员 ---
+        // --- admin ---
         .route(
             "/admin/users",
             get(admin::list_users).post(admin::create_user),
@@ -39,7 +39,7 @@ pub fn router(state: AppState) -> Router {
             patch(admin::patch_user).delete(admin::delete_user),
         )
         .route("/admin/users/{id}/keypair", post(admin::reset_keypair))
-        // --- 文件 ---
+        // --- files ---
         .route("/files", get(files::list_files).post(files::create_entry))
         .route("/file", get(files::read_file))
         .route("/files/rename", post(files::rename_entry))
@@ -59,8 +59,9 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// 基础安全响应头。注意这里没有加 CSP：前端要跑 Monaco 的 blob worker、
-/// KaTeX / Mermaid 注入内联样式，收紧 CSP 需要逐项放行，demo 阶段先保证不被破坏。
+/// Baseline security headers. No CSP is set on purpose: the frontend needs a Monaco
+/// blob worker and KaTeX / Mermaid inject inline styles, so a strict policy would have
+/// to allow-list each of them. The demo keeps it permissive instead.
 fn security_headers() -> tower::layer::util::Stack<
     SetResponseHeaderLayer<HeaderValue>,
     tower::layer::util::Stack<

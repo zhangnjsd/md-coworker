@@ -25,9 +25,9 @@ pub const COOKIE_NAME: &str = "mc_sid";
 const CHALLENGE_TTL_SECS: i64 = 120;
 const MFA_TICKET_TTL_SECS: i64 = 300;
 
-// ---------------------------------------------------------------- 提取器
+// ---------------------------------------------------------------- extractors
 
-/// 已登录用户。
+/// An authenticated user.
 pub struct AuthUser {
     pub user: UserRow,
     pub token: String,
@@ -51,7 +51,7 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-/// 管理员。
+/// An administrator.
 pub struct AdminUser(pub AuthUser);
 
 impl FromRequestParts<AppState> for AdminUser {
@@ -69,7 +69,7 @@ impl FromRequestParts<AppState> for AdminUser {
     }
 }
 
-// ---------------------------------------------------------------- Cookie 工具
+// ---------------------------------------------------------------- cookie helpers
 
 pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let raw = headers.get(header::COOKIE)?.to_str().ok()?;
@@ -108,7 +108,7 @@ fn login_response(state: &AppState, user: &UserRow) -> ApiResult<Response> {
     Ok(response)
 }
 
-// ---------------------------------------------------------------- 登录流程
+// ---------------------------------------------------------------- login flow
 
 #[derive(Deserialize)]
 pub struct ChallengeReq {
@@ -212,7 +212,7 @@ pub async fn me(auth: AuthUser) -> ApiResult<Json<Value>> {
     Ok(Json(json!({ "user": UserDto::from(&auth.user) })))
 }
 
-// ---------------------------------------------------------------- 账号自服务
+// ---------------------------------------------------------------- account self-service
 
 pub async fn regenerate_own_keypair(
     State(state): State<AppState>,
@@ -291,7 +291,7 @@ pub async fn totp_disable(
     Ok(Json(json!({ "user": UserDto::from(&user) })))
 }
 
-// ---------------------------------------------------------------- 内部工具
+// ---------------------------------------------------------------- internal helpers
 
 pub fn totp_aad(user_id: &str) -> String {
     format!("totp:{user_id}")
@@ -308,7 +308,7 @@ pub fn totp_secret(cipher: &Cipher, user: &UserRow) -> Result<Vec<u8>, AppError>
         .map_err(AppError::from)
 }
 
-/// 用户名规则：2-32 位，字母数字与 `_` `-`。
+/// Username rule: 2-32 characters, ASCII letters, digits, `_` and `-`.
 pub fn validate_username(username: &str) -> Result<(), AppError> {
     let len = username.chars().count();
     if !(2..=32).contains(&len) {
@@ -329,7 +329,7 @@ pub fn validate_username(username: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// 管理员可以指定角色字符串。
+/// Admins may pass a role string.
 pub fn parse_role(input: &str) -> Result<Role, AppError> {
     Role::parse(input).map_err(|_| AppError::bad_request("bad_role", "角色只能是 admin 或 user"))
 }

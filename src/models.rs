@@ -12,16 +12,6 @@ pub struct AppState {
     pub hub: Arc<Hub>,
 }
 
-impl AppState {
-    pub fn snapshot_path(&self, doc_path: &str) -> std::path::PathBuf {
-        let digest = sha2::Sha256::digest(doc_path.as_bytes());
-        let name = crate::config::hex_encode(&digest);
-        self.cfg.snapshots_dir().join(format!("{name}.bin"))
-    }
-}
-
-use sha2::Digest as _;
-
 #[derive(Debug, Serialize)]
 pub struct UserDto {
     pub id: String,

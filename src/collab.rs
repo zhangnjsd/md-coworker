@@ -44,7 +44,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(400);
 const PRESENCE_INTERVAL: Duration = Duration::from_millis(1000);
 const PRESENCE_TTL_MS: i64 = 30_000;
 
-// ---------------------------------------------------------------- 数据
+// ---------------------------------------------------------------- data
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
 pub struct Cursor {
@@ -76,7 +76,7 @@ struct Agent {
     last_seen: i64,
 }
 
-/// 广播事件。
+/// Broadcast events.
 #[derive(Debug, Clone)]
 pub enum ServerMsg {
     Update {
@@ -101,19 +101,7 @@ pub enum ServerMsg {
     Presence(Vec<PresenceUser>),
 }
 
-impl ServerMsg {
-    fn path(&self) -> Option<&str> {
-        match self {
-            ServerMsg::Update { path, .. }
-            | ServerMsg::Awareness { path, .. }
-            | ServerMsg::Peers { path, .. }
-            | ServerMsg::Saved { path, .. } => Some(path),
-            ServerMsg::Presence(_) => None,
-        }
-    }
-}
-
-/// 一个协作文件房间。
+/// Cowork room.
 pub struct Room {
     pub path: String,
     pub file: PathBuf,
@@ -174,9 +162,9 @@ impl Hub {
             .join(format!("{}.bin", crate::config::hex_encode(&digest)))
     }
 
-    // ------------------------------------------------------------ 房间
+    // ------------------------------------------------------------ rooms
 
-    /// 取得（必要时创建并加载）文档房间。
+    /// Get the room for a path, creating and loading it when necessary.
     pub fn ensure_room(&self, path: &str) -> Result<Arc<Room>, AppError> {
         {
             let rooms = self.rooms.lock().expect("rooms 锁被毒化");
@@ -196,8 +184,9 @@ impl Hub {
         let text = doc.get_or_insert_text(ROOT_TEXT);
         let snapshot = self.snapshot_path(path);
 
-        // 只有当快照不比磁盘上的文件旧时才使用它：确保外部修改（API 写入、git checkout、
-        // 手工编辑器保存）不会被过期的 CRDT 快照覆盖。
+        // Only reuse the snapshot when it is not older than the file on disk, so that
+        // external edits (API writes, git checkout, saves from another editor) are never
+        // overwritten by a stale CRDT snapshot.
         let snapshot_is_fresh = if snapshot.exists() {
             match (
                 std::fs::metadata(&snapshot).and_then(|m| m.modified()),
@@ -304,7 +293,8 @@ impl Hub {
         count
     }
 
-    /// 房间里没有人时把文档从内存中回收（磁盘快照已保存，下次进入会重新加载）。
+    /// Drop an empty room from memory (its snapshot is already on disk and is reloaded on
+    /// the next join).
     fn recycle_room(&self, room: &Arc<Room>) {
         let mut rooms = self.rooms.lock().expect("rooms 锁被毒化");
         let removable = rooms
@@ -319,7 +309,7 @@ impl Hub {
         }
     }
 
-    /// 应用一条 Yjs 更新；返回是否成功。
+    /// Apply one Yjs update.
     pub fn apply_update(&self, room: &Arc<Room>, update_bytes: &[u8]) -> Result<()> {
         let update = Update::decode_v1(update_bytes).context("非法的 Yjs 更新二进制")?;
         room.doc
@@ -330,7 +320,7 @@ impl Hub {
         Ok(())
     }
 
-    /// 立即把房间文本写回磁盘并保存加密快照。
+    /// Flush the room text to disk right now and store an encrypted snapshot.
     pub fn flush_room(&self, room: &Arc<Room>) -> Result<()> {
         if !room.dirty.swap(false, Ordering::Relaxed) {
             return Ok(());
@@ -341,7 +331,7 @@ impl Hub {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建父目录失败: {}", parent.display()))?;
         }
-        // 先写临时文件再 rename，避免半截内容被其它工具读到。
+        // Write a temp file and rename it, so other tools never observe a half-written file.
         let tmp = room.file.with_file_name(format!(
             ".{}.mc-tmp",
             room.file
@@ -407,7 +397,7 @@ impl Hub {
         }
     }
 
-    /// 删除文件/重命名后清理旧快照。
+    /// Drop the snapshot of a file that was renamed or deleted.
     pub fn forget_snapshot(&self, path: &str) {
         let snapshot = self.snapshot_path(path);
         if snapshot.exists() {
@@ -416,7 +406,7 @@ impl Hub {
         self.rooms.lock().expect("rooms 锁被毒化").remove(path);
     }
 
-    // ------------------------------------------------------------ 在线状态
+    // ------------------------------------------------------------ presence
 
     pub fn presence_register(&self, conn: u64, user: &UserRow) {
         let mut agents = self.agents.lock().expect("agents 锁被毒化");
@@ -452,16 +442,6 @@ impl Hub {
         }
     }
 
-    pub fn presence_clear_path(&self, conn: u64) {
-        let mut agents = self.agents.lock().expect("agents 锁被毒化");
-        if let Some(agent) = agents.get_mut(&conn) {
-            agent.path = None;
-            agent.cursor = None;
-            agent.selection = 0;
-            agent.last_seen = crate::db::now_ms();
-        }
-    }
-
     pub fn presence_remove(&self, conn: u64) {
         self.agents.lock().expect("agents 锁被毒化").remove(&conn);
     }
@@ -478,7 +458,7 @@ impl Hub {
     fn presence_snapshot(&self) -> Vec<PresenceUser> {
         let now = crate::db::now_ms();
         let agents = self.agents.lock().expect("agents 锁被毒化");
-        // 同一用户可能开了多个标签页：取最近活跃的那条
+        // One user may have several tabs open: keep the most recently active one.
         let mut by_user: HashMap<&str, &Agent> = HashMap::new();
         for agent in agents.values() {
             if now - agent.last_seen > PRESENCE_TTL_MS {
@@ -523,7 +503,7 @@ impl Hub {
     }
 }
 
-// ---------------------------------------------------------------- 后台任务
+// ---------------------------------------------------------------- background tasks
 
 pub fn spawn_background_tasks(hub: Arc<Hub>) {
     let flush_hub = hub.clone();
@@ -682,7 +662,7 @@ async fn handle_client_msg(
             if joined.insert(path.clone()) {
                 hub.join(&room);
             }
-            // 下发完整状态
+            // Send the full document state.
             let state_update = room
                 .doc
                 .transact()
@@ -817,7 +797,8 @@ fn encode_event(msg: &ServerMsg, self_conn: u64, joined: &HashSet<String>) -> Op
     }
 }
 
-/// 未使用但保留：把文档内容导出为纯文本（调试/测试用）。
+/// * Test use.
+#[allow(dead_code)]
 pub fn room_text(room: &Room) -> String {
     room.content()
 }

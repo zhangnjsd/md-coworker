@@ -23,9 +23,9 @@ use std::{
 
 const SKIP_DIRS: [&str; 5] = [".git", "node_modules", "target", ".idea", ".vscode"];
 
-// ---------------------------------------------------------------- 路径
+// ---------------------------------------------------------------- paths
 
-/// 把相对路径解析为工作区内的绝对路径。
+/// Resolve a relative path into an absolute path inside the workspace.
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
     let rel = rel.trim().trim_start_matches('/');
     if rel.is_empty() {
@@ -52,7 +52,7 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
     Ok(root.join(candidate))
 }
 
-/// 归一化的 POSIX 相对路径（去掉前导 `./` 与 `/`）。
+/// Normalize into a POSIX relative path (strips leading `./` and `/`).
 pub fn normalize_rel(rel: &str) -> String {
     let trimmed = rel.trim().trim_start_matches("./").trim_start_matches('/');
     trimmed.to_string()
@@ -70,7 +70,7 @@ pub fn is_hidden(name: &str) -> bool {
     name.starts_with('.') || SKIP_DIRS.contains(&name)
 }
 
-// ---------------------------------------------------------------- 目录树
+// ---------------------------------------------------------------- tree
 
 #[derive(Debug, Serialize)]
 pub struct Node {
@@ -144,7 +144,7 @@ pub fn build_tree(root: &Path, dir: &Path, prefix: &str) -> Result<Vec<Node>, Ap
     Ok(nodes)
 }
 
-// ---------------------------------------------------------------- 语言识别
+// ---------------------------------------------------------------- language detection
 
 pub fn language_for(path: &str) -> &'static str {
     let ext = Path::new(path)
@@ -180,7 +180,7 @@ pub fn language_for(path: &str) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------- 接口
+// ---------------------------------------------------------------- handlers
 
 #[derive(Deserialize)]
 pub struct FileQuery {
@@ -360,7 +360,7 @@ pub async fn delete_entry(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// 读取文件文本，供协作层初始化 CRDT 使用。
+/// Read a file as text; the collaboration layer uses it to seed a CRDT document.
 pub fn read_text_lossy(abs: &Path) -> Result<String> {
     let raw = std::fs::read(abs).with_context(|| format!("读取文件失败: {}", abs.display()))?;
     let text = String::from_utf8(raw).map_err(|_| anyhow!("文件不是合法的 UTF-8 文本"))?;

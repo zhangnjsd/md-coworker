@@ -1861,7 +1861,7 @@ body.is-resizing .splitter {
   pointer-events: none;
 }
 
-/* 文件树里的"正在编辑"标记 */
+/* "Currently editing" marker in the file tree */
 .tree-row.is-editing .tree-name {
   color: var(--fg-strong, #e6edf6);
   font-weight: 600;

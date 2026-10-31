@@ -1,5 +1,5 @@
-// md-coworker 端到端冒烟测试（HTTP + WebSocket + Yjs 同步 + 2FA）
-// 用法: node tools/smoke.mjs [baseUrl] [bootstrapKeyFile]
+// md-coworker end-to-end smoke test (HTTP + WebSocket + Yjs sync + 2FA)
+// Usage: node tools/smoke.mjs [baseUrl] [bootstrapKeyFile]
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import nacl from 'tweetnacl';
@@ -9,7 +9,7 @@ import * as Y from 'yjs';
 const BASE = process.env.MC_BASE || process.argv[2] || 'http://127.0.0.1:3000';
 const KEY_FILE = process.argv[3] || 'data/bootstrap-admin.key';
 const WS_BASE = BASE.replace(/^http/, 'ws');
-// 被测试的工作区目录（用来校验"编辑是否真的落盘"）
+// Workspace directory under test (used to verify that edits really land on disk)
 const WS_ROOT = process.env.MC_WS_ROOT || 'demo-workspace';
 
 let failures = 0;
@@ -94,7 +94,7 @@ function totpCode(secretB32, at = Date.now()) {
   return String(bin % 1e6).padStart(6, '0');
 }
 
-// --- WebSocket 客户端 ---
+// --- WebSocket client ---
 class Collab {
   constructor(cookie, username) {
     this.username = username;
@@ -135,7 +135,7 @@ class Collab {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------------------------------------------------------------- 主流程
+// ---------------------------------------------------------------- main flow
 async function main() {
   console.log('\n=== 1. 基础健康检查 ===');
   const probe = new Client('probe');
@@ -210,7 +210,7 @@ async function main() {
   const doc2 = new Y.Doc();
   Y.applyUpdate(doc2, Buffer.from(init2.update, 'base64'), 'remote');
 
-  // 客户端1 编辑
+  // Client 1 edits
   doc1.getText('content').insert(doc1.getText('content').length, '\n来自 alice 的一行\n');
   const update = Y.encodeStateAsUpdate(doc1);
   c1.send({ t: 'update', path: fsPath, update: Buffer.from(update).toString('base64') });
@@ -221,11 +221,11 @@ async function main() {
   check('两端 CRDT 收敛', doc1.getText('content').toString() === doc2.getText('content').toString());
   check('更新作者标记为 alice', relayed.user === alice, String(relayed.user));
 
-  // 客户端1 不应收到自己更新的回显
+  // Client 1 must not receive an echo of its own update
   const echo = c1.messages.find((m) => m.t === 'update');
   check('不向作者回显自己的更新', !echo);
 
-  // 客户端2 编辑（并发）
+  // Client 2 edits (concurrently)
   doc2.getText('content').insert(0, '> bob 说：你好\n\n');
   c2.send({ t: 'update', path: fsPath, update: Buffer.from(Y.encodeStateAsUpdate(doc2)).toString('base64') });
   const relayed2 = await c1.waitFor((m) => m.t === 'update');
@@ -248,7 +248,7 @@ async function main() {
   const bobPresence = presence.users.find((u) => u.username === bob);
   check('presence 显示 bob 的光标与选区', bobPresence?.cursor?.line === 7 && bobPresence?.selection === 2, JSON.stringify(bobPresence));
 
-  // 实时落盘
+  // Live persist to disk
   const saved = await c1.waitFor((m) => m.t === 'saved', 6000);
   check('收到 saved 帧', !!saved.path);
   await sleep(400);

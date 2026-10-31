@@ -63,7 +63,7 @@ pub async fn create_user(
         .context("创建用户失败")?;
     tracing::info!(user = %user.username, role = user.role.as_str(), "管理员创建用户");
 
-    // 私钥只在这里出现一次，之后无法再取回。
+    // The private key is shown exactly once here and can never be retrieved again.
     Ok(Json(json!({
         "user": UserDto::from(&user),
         "private_key": private_key,
@@ -83,7 +83,7 @@ pub async fn reset_keypair(
 
     let (private_key, public_key) = crypto::generate_keypair();
     state.db.set_public_key(&user.id, &public_key)?;
-    // 失效该用户既有会话（管理员重置自己时保留当前会话）
+    // Drop that user's existing sessions (resetting your own key keeps this session).
     if admin.0.user.id != user.id {
         state.db.delete_user_sessions(&user.id)?;
     }

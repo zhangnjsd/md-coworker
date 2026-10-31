@@ -1,5 +1,6 @@
-// 浏览器端到端测试：真实 Chromium 打开两个页面，验证登录、编辑、预览、实时同步、在线面板与撤销隔离。
-// 用法: node tools/browser.mjs [baseUrl] [bootstrapKeyFile]
+// Browser end-to-end test: real Chromium opens two pages and verifies login, editing, preview,
+// live sync, the online-user panel and undo isolation.
+// Usage: node tools/browser.mjs [baseUrl] [bootstrapKeyFile]
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
 import nacl from 'tweetnacl';
@@ -20,7 +21,7 @@ function check(name, cond, extra = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// --- 用 API 创建用户 ---
+// --- Create users via the API ---
 async function apiLogin(username, privateKeyB64) {
   const ch = await (await fetch(`${BASE}/api/auth/challenge`, {
     method: 'POST',
@@ -109,7 +110,7 @@ async function main() {
   if (!bobUser.private_key) throw new Error(`创建用户失败: ${JSON.stringify(bobUser)}`);
 
   console.log('\n=== 1. 登录页 ===');
-  // 每个用户各自独立的浏览上下文（独立 Cookie），模拟两台电脑
+  // Each user gets a separate browser context (separate cookies), simulating two machines
   const ctxA = await browser.createBrowserContext();
   const ctxB = await browser.createBrowserContext();
   const pageA = await ctxA.newPage();

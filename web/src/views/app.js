@@ -10,7 +10,7 @@ import { createMarkdownEditor } from '../editor/markdown.js'
 import { createPreview } from '../editor/preview.js'
 import { openSettings } from './settings.js'
 
-// Monaco（3.4MB）只在真正打开非 Markdown 文件时才动态加载，首屏只走 CodeMirror。
+// Monaco (3.4MB) loads lazily only for non-Markdown files; first paint uses CodeMirror only.
 function isMarkdownPath(path) {
   return /\.(md|markdown)$/i.test(String(path || ''))
 }
@@ -641,7 +641,7 @@ export function mountApp(host, opts) {
     renderStatus()
   }
 
-  // 在文件树上标出"谁正在编辑这个文件"（实时 presence 的第二个作用）
+  // Mark "who is editing this file" on the file tree (the second job of live presence)
   function paintTreePresence() {
     const byPath = new Map()
     for (const peer of state.presence) {

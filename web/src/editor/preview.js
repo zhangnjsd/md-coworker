@@ -39,7 +39,7 @@ try {
 
 let mermaidCounter = 0
 
-// Mermaid 体积约 2.7MB，只有在文档里真的出现 ```mermaid 时才按需加载。
+// Mermaid is ~2.7MB, so load it on demand only when ```mermaid really appears in a document.
 let mermaidLoader = null
 function loadMermaid() {
   if (!mermaidLoader) {

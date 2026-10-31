@@ -96,7 +96,8 @@ fn init_tracing() {
         .init();
 }
 
-/// 首次启动：创建一个管理员账号，并把私钥打印到终端 / 落一份到 `data/bootstrap-admin.key`。
+/// First run: create the admin account, print its private key and drop a copy in
+/// `data/bootstrap-admin.key`.
 fn bootstrap_admin(db: &Db, cfg: &Config) -> Result<()> {
     if db.count_users()? > 0 {
         return Ok(());
