@@ -546,6 +546,12 @@
 }
 
 /* Create block sits inside the same panel, under the table. */
+/* Absent features read as plain muted text, not as a coloured chip. */
+.admin-off {
+  font-size: var(--fs-sm);
+  color: var(--fg-3);
+}
+
 .admin-create {
   display: flex;
   flex-direction: column;

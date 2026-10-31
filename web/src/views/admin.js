@@ -253,10 +253,10 @@ export function mountAdmin(host, opts) {
       el(
         'td',
         {},
-        el('span', {
-          class: `badge ${row.twofa_enabled ? 'badge-ok' : 'badge-warn'}`,
-          text: row.twofa_enabled ? '启用' : '未启用',
-        }),
+        // Only 2FA being on is a signal; a column of amber "未启用" chips just adds noise.
+        row.twofa_enabled
+          ? el('span', { class: 'badge badge-ok', text: '已启用' })
+          : el('span', { class: 'admin-off', text: '未启用' }),
       ),
       el('td', { class: 'admin-mono', text: fmtDateTime(row.created_at) }),
       el(

@@ -281,7 +281,15 @@ async function main() {
   check('管理员页面列出用户', adminOk);
   await pageA.screenshot({ path: '/tmp/shot-admin.png' });
 
+  // Leave nothing behind: the throwaway account would otherwise pile up in the
+  // user list of whoever runs this test.
   await browser.close();
+  const del = await fetch(`${BASE}/api/admin/users/${bobUser.user.id}`, {
+    method: 'DELETE',
+    headers: { cookie: adminApi.cookie },
+  });
+  check('删除测试账号', del.ok, `HTTP ${del.status}`);
+
   console.log(`\n${failures === 0 ? '\x1b[32m浏览器测试全部通过\x1b[0m' : `\x1b[31m${failures} 项失败\x1b[0m`}\n`);
   process.exit(failures === 0 ? 0 : 1);
 }
