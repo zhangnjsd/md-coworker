@@ -19,12 +19,12 @@ default:
 
 # Install dependencies for the frontend and the test scripts
 install:
-    cd web && npm install
-    cd tools && npm install
+    cd web && bun install
+    cd tools && bun install
 
 # Build the frontend into web/dist
 web:
-    cd web && npm run build
+    cd web && bun run build
 
 # Build the backend (debug)
 build:

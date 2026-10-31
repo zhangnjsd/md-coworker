@@ -20,70 +20,8 @@
 
 .login-shell {
   display: grid;
-  grid-template-columns: 400px 420px;
-  gap: var(--sp-8);
+  grid-template-columns: 600px;
   align-items: center;
-}
-
-/* ---------------------------------------------------------- left narrative */
-
-.login-side {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-  min-width: 0;
-}
-
-.login-side-title {
-  max-width: 22ch;
-  font-family: var(--font-display);
-  font-size: var(--fs-3xl);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-  color: var(--fg);
-}
-
-.login-side-title span {
-  display: block;
-}
-
-.login-side-text {
-  max-width: 65ch;
-  font-size: var(--fs-sm);
-  line-height: var(--lh-body);
-  color: var(--fg-2);
-}
-
-.login-side-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  margin: var(--sp-2) 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.login-side-list li {
-  position: relative;
-  padding-left: var(--sp-3);
-  font-size: var(--fs-xs);
-  line-height: var(--lh-body);
-  color: var(--fg-2);
-}
-
-.login-side-list li::before {
-  content: '';
-  position: absolute;
-  top: var(--sp-1);
-  bottom: var(--sp-1);
-  left: 0;
-  width: 1px;
-  background: var(--line);
-}
-
-.login-side-list .mono {
-  color: var(--fg);
 }
 
 /* -------------------------------------------------------------- login card */
@@ -106,26 +44,6 @@
 
 .login-card-head {
   padding: var(--sp-5) var(--sp-5) 0;
-}
-
-.login-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-}
-
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-md);
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  letter-spacing: -0.02em;
 }
 
 .brand-name {
@@ -207,16 +125,6 @@
   padding: var(--sp-3) var(--sp-5);
   border-top: 1px solid var(--line-soft);
   color: var(--fg-3);
-}
-
-.login-foot .ico {
-  margin-top: 2px;
-  flex: 0 0 auto;
-}
-
-.login-foot-text {
-  font-size: var(--fs-meta);
-  line-height: var(--lh-body);
 }
 
 /* --------------------------------------------------------------- 2FA step */

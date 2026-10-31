@@ -6,19 +6,12 @@ import { button, el, svgIcon } from '../util/dom.js'
 import { toastSuccess } from '../ui/toast.js'
 
 const FRIENDLY_ERRORS = {
-  bad_signature: '密钥与该用户不匹配，请粘贴完整私钥（44 字符）或重新选择 .key 文件',
+  bad_signature: '密钥与该用户不匹配，请粘贴完整私钥或重新选择 .key 文件',
   unknown_user: '用户不存在，请核对用户名或向管理员索取该账号的私钥文件',
   bad_totp: '验证码错误或已过期，请重新输入当前 6 位验证码',
   unauthorized: '登录状态已失效，请重新登录',
-  network_error: '无法连接服务端，请确认后端服务已启动',
+  network_error: '无法连接服务端，请确认后端服务已启动'
 }
-
-const CAPABILITIES = [
-  ['Ed25519', '密钥登录，可选 TOTP 二次验证'],
-  ['CodeMirror · Monaco', '双引擎，Markdown 与源码同屏协作'],
-  ['CRDT', '按文件隔离的房间，切换文件互不干扰'],
-  ['KaTeX · Mermaid', '公式、图表与代码高亮开箱可用'],
-]
 
 function friendlyMessage(err) {
   if (!err) return '登录失败，请重试'
@@ -311,17 +304,8 @@ export function mountLogin(host, opts) {
     el(
       'div',
       { class: 'login-card-head' },
-      el(
-        'div',
-        { class: 'login-brand' },
-        el('div', { class: 'brand-mark', text: 'md' }),
-        el(
-          'div',
-          {},
-          el('div', { class: 'brand-name', text: 'md-coworker' }),
-          el('div', { class: 'brand-sub', text: '实时协作 Markdown 工作区' }),
-        ),
-      ),
+      el('div', { class: 'brand-name', text: 'md-coworker' }),
+      el('div', { class: 'brand-sub', text: '实时协作 Markdown 工作区' }),
     ),
     el(
       'form',
@@ -335,48 +319,17 @@ export function mountLogin(host, opts) {
       el(
         'div',
         { class: 'field' },
-        el('label', { class: 'field-label', text: '私钥（base64 seed）', attrs: { for: 'login-key' } }),
+        el('label', { class: 'field-label', text: '私钥', attrs: { for: 'login-key' } }),
         keyInput,
       ),
       dropZone,
       errorBox,
       submitBtn,
-    ),
-    el(
-      'div',
-      { class: 'login-foot' },
-      svgIcon('lock', 13),
-      el('span', {
-        class: 'login-foot-text',
-        text: '本系统只支持密钥登录，不提供密码。私钥只保存在本机浏览器中。',
-      }),
-    ),
-  )
-
-  const side = el(
-    'aside',
-    { class: 'login-side' },
-    el(
-      'h1',
-      { class: 'login-side-title' },
-      el('span', { text: '多人同时编辑同一份' }),
-      el('span', { text: 'Markdown。' }),
-    ),
-    el('p', {
-      class: 'login-side-text',
-      text: '基于 CRDT 的无冲突协同编辑：光标与选区实时同步，内容直接写回服务端工作区，不需要手动保存，也不会有版本冲突。',
-    }),
-    el(
-      'ul',
-      { class: 'login-side-list' },
-      CAPABILITIES.map(([term, text]) =>
-        el('li', {}, el('span', { class: 'mono', text: term }), el('span', { text: ` — ${text}` })),
-      ),
-    ),
+    )
   )
 
   const stack = el('div', { class: 'login-stack' }, credentialsCard)
-  host.append(el('div', { class: 'login-shell' }, side, stack))
+  host.append(el('div', { class: 'login-shell' }, stack))
 
   usernameInput.addEventListener('input', refreshSubmitState)
   keyInput.addEventListener('input', refreshSubmitState)
