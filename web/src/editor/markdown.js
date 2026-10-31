@@ -310,6 +310,23 @@ export function createMarkdownEditor(opts) {
       expectedScrollTop = dom.scrollTop;
     },
 
+    /**
+     * Insert `text` at the caret. It travels through the collaboration binding like
+     * any other edit, so collaborators see the insertion and the author can undo it
+     * with their own undo stack.
+     */
+    insertAtCursor(text) {
+      const value = String(text ?? "");
+      if (!value) return false;
+      const range = view.state.selection.main;
+      view.dispatch({
+        changes: { from: range.from, to: range.to, insert: value },
+        selection: { anchor: range.from + value.length },
+      });
+      view.focus();
+      return true;
+    },
+
     text() {
       return view.state.doc.toString();
     },

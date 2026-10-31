@@ -14,9 +14,37 @@ function isMarkdownPath(path) {
   return /\.(md|markdown)$/i.test(path || "");
 }
 
+// Formats the browser shows directly. They are not collaborative documents, so
+// they never join a room and never get an editor instance.
+const IMAGE_EXTS = [
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "avif",
+  "bmp",
+  "ico",
+  "svg",
+];
+
+function isImagePath(path) {
+  const name = String(path || "");
+  const idx = name.lastIndexOf(".");
+  if (idx <= 0) return false;
+  return IMAGE_EXTS.includes(name.slice(idx + 1).toLowerCase());
+}
+
+/** Same-origin URL the browser loads the bytes from (cookie auth). */
+function rawSrc(path) {
+  return `/api/raw?path=${encodeURIComponent(path)}`;
+}
+
 const LS = {
   sidebar: "mc.ui.sidebarCollapsed",
   treeW: "mc.ui.treeW",
+  rail: "mc.ui.railCollapsed",
+  railW: "mc.ui.railW",
   split: "mc.ui.split",
   scrollSync: "mc.ui.scrollSync",
 };
@@ -26,6 +54,11 @@ const SPLIT_MAX = 0.85;
 const TREE_MIN = 200;
 const TREE_MAX = 460;
 const TREE_RAIL = 44;
+const RAIL_MIN = 180;
+const RAIL_MAX = 420;
+const RAIL_RAIL = 44;
+// One arrow-key press on the rail handle moves it by this much.
+const RAIL_STEP = 16;
 
 function lsGet(key, fallback = null) {
   try {
@@ -84,6 +117,8 @@ const ICON_PATHS = {
     '<path d="M13.1 8A5.1 5.1 0 1 1 11.5 4.3" /><path d="M13.3 2.7v3.1h-3.1" />',
   "panel-left":
     '<rect x="2.4" y="3.1" width="11.2" height="9.8" rx="1.4" /><path d="M6.4 3.1v9.8" />',
+  "panel-right":
+    '<rect x="2.4" y="3.1" width="11.2" height="9.8" rx="1.4" /><path d="M9.6 3.1v9.8" />',
   doc: '<path d="M4 2.4h4.7L12 5.7v7.9H4z" /><path d="M8.7 2.4v3.3H12" /><path d="M5.9 8.7h4.2M5.9 10.8h4.2" />',
 };
 
@@ -138,6 +173,7 @@ export function mountApp(host, opts) {
     user,
     tree: [],
     currentPath: null,
+    imagePath: null,
     editor: null,
     editorObserver: null,
     saveState: "idle",
@@ -238,6 +274,7 @@ export function mountApp(host, opts) {
     onRename: (node) => renameEntry(node.path),
     onDelete: (node) => deleteEntry(node.path),
     onRetry: () => reloadTree(true),
+    onMove: (move) => moveEntry(move),
   });
   tree.setLoading(true);
 
@@ -285,6 +322,10 @@ export function mountApp(host, opts) {
   const uploadPct = el("span", { class: "upload-progress-pct", text: "0%" });
   const uploadFill = el("div", { class: "upload-progress-fill" });
   const uploadMeta = el("span", { class: "upload-progress-meta", text: "" });
+  // Filled after a finished batch: one row per uploaded image, each with an
+  // "insert at cursor" action. Empty (and hidden) the rest of the time.
+  const uploadResults = el("div", { class: "upload-results" });
+  uploadResults.hidden = true;
   const uploadTrack = el(
     "div",
     {
@@ -309,6 +350,7 @@ export function mountApp(host, opts) {
     el("div", { class: "upload-progress-head" }, uploadName, uploadPct),
     uploadTrack,
     uploadMeta,
+    uploadResults,
   );
   uploadProgress.hidden = true;
 
@@ -406,6 +448,59 @@ export function mountApp(host, opts) {
     el("div", { class: "pane-body" }, previewHost),
   );
 
+  // Image files get a viewer instead of an editor: no room is joined, nothing
+  // is editable, and the two text panes make way for it.
+  const imageImg = el("img", {
+    class: "image-img",
+    attrs: { alt: "", decoding: "async" },
+  });
+  const imageError = el("p", { class: "image-error", text: "" });
+  imageError.hidden = true;
+  const imageStage = el("div", { class: "image-stage" }, imageImg, imageError);
+  const imageTitle = el("span", { class: "pane-title", text: "图片" });
+  const imageMeta = el("span", { class: "pane-meta", text: "" });
+  const imageName = el("span", { class: "image-name", text: "" });
+  const imageSize = el("span", { class: "image-size", text: "" });
+  const imageDims = el("span", { class: "image-dims", text: "" });
+  const imageOpen = el("a", {
+    class: "image-open",
+    text: "单独打开",
+    attrs: {
+      href: "#",
+      target: "_blank",
+      rel: "noopener",
+      title: "在新标签页打开原图",
+    },
+  });
+  const imageCaption = el(
+    "div",
+    { class: "image-caption" },
+    el("span", { class: "image-facts" }, imageName, imageSize, imageDims),
+    el("span", { class: "image-note", text: "图片文件不支持协作编辑" }),
+    imageOpen,
+  );
+  const imagePane = el(
+    "section",
+    { class: "pane pane-image" },
+    el("div", { class: "pane-head" }, imageTitle, imageMeta),
+    el("div", { class: "pane-body" }, imageStage, imageCaption),
+  );
+  imagePane.hidden = true;
+
+  imageImg.addEventListener("load", () => {
+    imageError.hidden = true;
+    imageImg.hidden = false;
+    const w = imageImg.naturalWidth;
+    const h = imageImg.naturalHeight;
+    imageDims.textContent = w && h ? `${w} × ${h} px` : "";
+  });
+
+  imageImg.addEventListener("error", () => {
+    imageImg.hidden = true;
+    imageError.hidden = false;
+    imageError.textContent = `图片无法加载：${state.imagePath || "这个文件"}。它可能刚被移动或删除，刷新文件树后再点一次。`;
+  });
+
   const splitter = el("div", {
     class: "splitter",
     attrs: { role: "separator", "aria-orientation": "vertical" },
@@ -416,6 +511,7 @@ export function mountApp(host, opts) {
     editorPane,
     splitter,
     previewPane,
+    imagePane,
   );
 
   // ------------------------------------------------------------ collab panel
@@ -449,6 +545,45 @@ export function mountApp(host, opts) {
     selfCursor,
     selfFile,
   );
+  // Collapsing turns the rail into a 44px strip of people — the same shape as
+  // the sidebar rail: dots now, names on hover.
+  const railPeers = el("div", { class: "collab-rail-peers" });
+  const railCountText = el("span", { class: "collab-rail-count", text: "1" });
+  const collapseRailBtn = iconBtn(
+    "panel-right",
+    "收起协作栏",
+    () => toggleRail(),
+    "rail-toggle",
+  );
+  const expandRailBtn = iconBtn(
+    "panel-right",
+    "展开协作栏",
+    () => toggleRail(),
+    "rail-toggle",
+  );
+  const collabRail = el(
+    "div",
+    { class: "collab-rail" },
+    expandRailBtn,
+    railPeers,
+    railCountText,
+  );
+
+  // Left-edge handle, the mirror image of .sidebar-resizer.
+  const collabResizer = el("div", {
+    class: "collab-resizer",
+    attrs: {
+      role: "separator",
+      "aria-orientation": "vertical",
+      "aria-label": "调整协作栏宽度",
+      "aria-valuemin": String(RAIL_MIN),
+      "aria-valuemax": String(RAIL_MAX),
+      "aria-valuenow": String(RAIL_MIN),
+      tabindex: "0",
+      title: "拖拽调整协作栏宽度，双击恢复默认",
+    },
+  });
+
   const collabPanel = el(
     "aside",
     { class: "collab-panel" },
@@ -457,8 +592,11 @@ export function mountApp(host, opts) {
       { class: "collab-head" },
       el("span", { class: "collab-title", text: "协作" }),
       collabCount,
+      collapseRailBtn,
     ),
     presenceList,
+    collabRail,
+    collabResizer,
   );
 
   // -------------------------------------------------------------- status bar
@@ -466,7 +604,7 @@ export function mountApp(host, opts) {
   const statusCursor = el("span", { class: "status-item", text: "行 1, 列 1" });
   const statusWords = el("span", { class: "status-item", text: "0 字" });
   const statusOnline = el("span", { class: "status-item", text: "在线 0 人" });
-  const statusFile = el("span", { class: "status-path", text: "—" });
+  const statusFile = el("span", { class: "status-path", text: "" });
   const statusSave = el("span", { class: "status-item", text: "已保存" });
   const statusbar = el(
     "footer",
@@ -640,27 +778,19 @@ export function mountApp(host, opts) {
     });
     if (result === null) return;
     const next = result.trim().replace(/^\/+/, "");
+    const openPath = await releaseOpenRoom(path);
     try {
       await api.renameEntry(path, next);
-      const wasOpen =
-        state.currentPath === path ||
-        (state.currentPath || "").startsWith(`${path}/`);
-      if (wasOpen) {
-        const target =
-          state.currentPath === path
-            ? next
-            : next + state.currentPath.slice(path.length);
-        collab.dropSession(state.currentPath);
-        await closeEditor();
-        state.currentPath = null;
+      if (openPath) {
         await reloadTree();
-        await openFile(target);
+        await openFile(movedPath(openPath, path, next)).catch(() => {});
       } else {
         collab.dropSession(path);
         await reloadTree();
       }
       toastSuccess("重命名完成");
     } catch (err) {
+      if (openPath) await openFile(openPath).catch(() => {});
       toastError(err.message || "重命名失败，请检查目标路径是否已存在");
     }
   }
@@ -693,6 +823,96 @@ export function mountApp(host, opts) {
     }
   }
 
+  /**
+   * Drag-and-drop move. The tree computes source and destination; the server
+   * treats a move as a rename, so this is the same call as 重命名 — only the
+   * copy differs. Failures stay specific: every code says what to do next.
+   */
+  /** Sleep helper for the room-release handshake. */
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /**
+   * The server refuses to rename/move a path while a collaboration room is open
+   * on it — and that room is usually ours, because we have the file open. So the
+   * editor steps out first: the content is already saved server-side, and the
+   * caller re-opens the new path afterwards.
+   * @returns {string} the path that was open, or "" when nothing was.
+   */
+  async function releaseOpenRoom(path) {
+    const openPath = state.currentPath || "";
+    if (!openPath) return "";
+    if (openPath !== path && !openPath.startsWith(`${path}/`)) return "";
+    collab.dropSession(openPath);
+    await closeEditor();
+    state.currentPath = null;
+    renderBreadcrumb();
+    renderStatus();
+    await pause(150);
+    return openPath;
+  }
+
+  /** Where an open file ends up when its path (or an ancestor) moves. */
+  function movedPath(openPath, from, to) {
+    return openPath === from ? to : to + openPath.slice(from.length);
+  }
+
+  /**
+   * Drag-and-drop move. The tree computes source and destination; the server
+   * treats a move as a rename, so this is the same call as 重命名 — only the
+   * copy differs. Failures stay specific: every code says what to do next.
+   */
+  async function moveEntry(move) {
+    if (!move) return;
+    const from = move.from;
+    const to = move.to;
+    if (!from || !to || from === to) return;
+
+    const openPath = await releaseOpenRoom(from);
+    let error = null;
+    // One retry: the room release is a websocket message, and the server only
+    // clears `file_busy` once it lands.
+    for (let attempt = 0; attempt < 2 && !error; attempt += 1) {
+      try {
+        await api.renameEntry(from, to);
+        error = null;
+        break;
+      } catch (err) {
+        error = err;
+        if (!(err && err.code === "file_busy" && openPath && attempt === 0))
+          break;
+        await pause(300);
+      }
+    }
+
+    if (error) {
+      const code = error.code;
+      if (code === "file_exists")
+        toastError("目标文件夹里已经有同名文件，先改名再移动");
+      else if (code === "file_busy")
+        toastError("这个文件正在被别人编辑，等所有人离开后再移动");
+      else if (code === "bad_path")
+        toastError("不能把文件夹移动到它自己或它的子文件夹里");
+      else if (code === "file_not_found")
+        toastError("文件已经不在了，刷新文件树后再试一次");
+      else toastError(error.message ? error.message : "移动失败，请稍后重试");
+      await reloadTree();
+      if (openPath) await openFile(openPath).catch(() => {});
+      return;
+    }
+
+    if (openPath) {
+      await reloadTree();
+      await openFile(movedPath(openPath, from, to)).catch(() => {});
+    } else {
+      collab.dropSession(from);
+      await reloadTree();
+      tree.setSelected(to);
+    }
+
+    const dir = parentPath(to);
+    toastSuccess(dir ? `已移动到「${dir}/」` : "已移动到工作区根目录");
+  }
+
   // ---------------------------------------------------------------- upload IO
 
   const MAX_UPLOAD_BATCH = 20;
@@ -701,6 +921,11 @@ export function mountApp(host, opts) {
   let maxUploadBytes = 0;
   let uploading = false;
   let uploadToken = 0;
+  // Auto-hide timer for the "insert at cursor" result rows, plus the batch they
+  // describe so the rows can be re-evaluated when a different file is opened.
+  let uploadResultsTimer = 0;
+  let uploadResultsBatch = [];
+  let uploadResultsLive = false;
   // dragenter/dragleave fire once per element crossed, so they are counted
   // rather than toggled; the overlay only leaves at zero.
   let dragDepth = 0;
@@ -796,6 +1021,8 @@ export function mountApp(host, opts) {
     const pct = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
     const position =
       count > 1 ? `正在上传 ${Math.min(index, count)}/${count} · ${pct}%` : "";
+    // A new batch invalidates the previous batch's insert actions.
+    clearUploadResults();
     uploadProgress.hidden = false;
     uploadName.textContent = name;
     uploadName.title = name;
@@ -811,9 +1038,157 @@ export function mountApp(host, opts) {
 
   function hideUploadProgress() {
     uploadProgress.hidden = true;
+    clearUploadResults();
     uploadFill.style.transform = "scaleX(0)";
     uploadTrack.setAttribute("aria-valuenow", "0");
     uploadTrack.setAttribute("aria-valuetext", "上传进度 0%");
+  }
+
+  /**
+   * `assets/x.png` seen from `notes/a.md` is `../assets/x.png`; from a document
+   * in the workspace root it stays `assets/x.png`. Pure string work on `/`.
+   */
+  function relativeToDoc(docPath, targetPath) {
+    const docDirs = String(docPath || "")
+      .split("/")
+      .slice(0, -1);
+    const target = String(targetPath || "").split("/");
+    let shared = 0;
+    while (
+      shared < docDirs.length &&
+      shared < target.length - 1 &&
+      docDirs[shared] === target[shared]
+    ) {
+      shared += 1;
+    }
+    const parts = [];
+    for (let i = shared; i < docDirs.length; i += 1) parts.push("..");
+    parts.push(...target.slice(shared));
+    return parts.join("/");
+  }
+
+  /** A markdown document with a live editor is the only place an image can go. */
+  function canInsertAtCursor() {
+    return Boolean(
+      isMarkdownPath(state.currentPath) &&
+      state.editor &&
+      typeof state.editor.insertAtCursor === "function",
+    );
+  }
+
+  /** @param {string} path */
+  function insertImageRef(path) {
+    if (!canInsertAtCursor()) {
+      toastError("插入需要先打开一个 Markdown 文档，现在没有可编辑的文件");
+      return false;
+    }
+    const rel = relativeToDoc(state.currentPath, path);
+    const ok = state.editor.insertAtCursor(`![](${rel})\n`);
+    if (!ok) {
+      toastError("当前没有可编辑的光标位置");
+      return false;
+    }
+    toastSuccess("已插入图片引用");
+    return true;
+  }
+
+  function clearUploadResults() {
+    if (uploadResultsTimer) {
+      clearTimeout(uploadResultsTimer);
+      uploadResultsTimer = 0;
+    }
+    uploadResultsLive = false;
+    uploadResultsBatch = [];
+    uploadResults.innerHTML = "";
+    uploadResults.hidden = true;
+  }
+
+  /** The open document decides whether "插入到光标" is offerable at all. */
+  function refreshUploadResults() {
+    if (!uploadResultsLive && uploadResultsBatch.length === 0) return;
+    renderUploadResults(uploadResultsBatch);
+  }
+
+  /** @param {any[]} uploaded */
+  function renderUploadResults(uploaded) {
+    clearUploadResults();
+    const images = (uploaded || []).filter(
+      (item) => item && item.path && isImagePath(item.path),
+    );
+    if (!images.length) return;
+    uploadResultsBatch = uploaded;
+    uploadResultsLive = true;
+    const insertable = canInsertAtCursor();
+    for (const image of images) {
+      const name = baseName(image.path);
+      let size = image.size;
+      if (typeof size !== "number") {
+        const node = tree.findNode(image.path);
+        size = node && node.size;
+      }
+      const insertBtn = el("button", {
+        class: "btn btn-sm btn-ghost upload-insert",
+        text: "插入到光标",
+        attrs: {
+          type: "button",
+          title: insertable
+            ? `把 ![](${relativeToDoc(state.currentPath, image.path)}) 插入到光标处`
+            : "先打开一个 Markdown 文档，再把这张图片插进去",
+        },
+        on: {
+          click: () => {
+            if (insertBtn.disabled) return;
+            const ok = insertImageRef(image.path);
+            if (!ok) return;
+            insertBtn.textContent = "已插入";
+            insertBtn.classList.add("is-done");
+            insertBtn.disabled = true;
+          },
+        },
+      });
+      if (!insertable) insertBtn.style.display = "none";
+      uploadResults.append(
+        el(
+          "div",
+          { class: "upload-result" },
+          el("span", {
+            class: "upload-result-name",
+            text: name,
+            attrs: { title: image.path },
+          }),
+          el("span", {
+            class: "upload-result-size",
+            text: typeof size === "number" && size > 0 ? fmtBytes(size) : "",
+          }),
+          insertBtn,
+        ),
+      );
+    }
+    uploadResults.hidden = false;
+    uploadResultsTimer = setTimeout(() => {
+      uploadResultsTimer = 0;
+      hideUploadProgress();
+    }, 45000);
+  }
+
+  /**
+   * Batch finished: keep the strip on screen only when there is an image to
+   * insert, and let it fade out on its own after a while.
+   */
+  function showUploadSettled(dir, uploaded) {
+    uploadName.textContent = "上传完成";
+    uploadName.title = "";
+    uploadPct.textContent = "";
+    uploadFill.style.transform = "scaleX(1)";
+    uploadTrack.setAttribute("aria-valuenow", "100");
+    uploadTrack.setAttribute(
+      "aria-valuetext",
+      `上传完成，已上传 ${uploaded.length} 个文件`,
+    );
+    uploadMeta.textContent = `已上传 ${uploaded.length} 个文件到${dirLabel(dir)}`;
+    uploadProgress.hidden = false;
+    renderUploadResults(uploaded);
+    if (uploadResults.hidden) hideUploadProgress();
   }
 
   /**
@@ -937,7 +1312,10 @@ export function mountApp(host, opts) {
       return;
     } finally {
       uploading = false;
-      hideUploadProgress();
+      // A finished batch with images may still offer "插入到光标"; everything
+      // else clears the strip right away.
+      if (!uploaded.some((item) => item && item.path && isImagePath(item.path)))
+        hideUploadProgress();
     }
 
     if (token !== uploadToken || state.destroyed) return;
@@ -963,11 +1341,15 @@ export function mountApp(host, opts) {
     toastSuccess(
       `已上传 ${uploaded.length} 个文件到${dir ? `「${dir}」` : "工作区根目录"}`,
     );
+    // Offer the image references once the tree and the document settled, so the
+    // relative path matches what is actually open.
+    showUploadSettled(dir, uploaded);
   }
 
   // ------------------------------------------------------------------ editor
 
   async function closeEditor() {
+    hideImageViewer();
     if (state.editorObserver) {
       const { ytext, fn } = state.editorObserver;
       try {
@@ -997,8 +1379,78 @@ export function mountApp(host, opts) {
   }
 
   /** @param {string} path */
+  function showImageViewer(path) {
+    const name = baseName(path);
+    const node = tree.findNode(path);
+    const src = rawSrc(path);
+    state.imagePath = path;
+    imageTitle.textContent = name;
+    imageTitle.title = path;
+    imageMeta.textContent = "图片";
+    imageName.textContent = name;
+    imageSize.textContent =
+      node && typeof node.size === "number" && node.size > 0
+        ? fmtBytes(node.size)
+        : "";
+    imageDims.textContent = "";
+    imageError.hidden = true;
+    imageError.textContent = "";
+    imageImg.hidden = false;
+    imageImg.alt = name;
+    imageImg.title = name;
+    imageImg.src = src;
+    imageOpen.href = src;
+    imageOpen.title = `在新标签页打开 ${name}`;
+    imagePane.hidden = false;
+    center.classList.add("has-image");
+    // No line/column for a picture, and no word count either.
+    statusCursor.textContent = "图片";
+    statusWords.hidden = true;
+    selfCursor.textContent = "—";
+  }
+
+  function hideImageViewer() {
+    if (!state.imagePath && imagePane.hidden) return;
+    state.imagePath = null;
+    imagePane.hidden = true;
+    imageImg.removeAttribute("src");
+    center.classList.remove("has-image");
+    statusCursor.textContent = "行 1, 列 1";
+    statusWords.hidden = false;
+  }
+
+  /** @param {string} path */
+  async function openImage(path) {
+    if (state.currentPath === path && state.imagePath === path) {
+      tree.setCurrent(path);
+      return;
+    }
+    const previous = state.currentPath;
+    tree.setCurrent(path);
+    // Re-rendering the tree drops the presence dots; put them back immediately.
+    paintTreePresence();
+    if (previous && previous !== path) collab.leaveFile(previous);
+    await closeEditor();
+
+    state.currentPath = path;
+    state.saveState = "idle";
+    state.cursor = null;
+    state.words = 0;
+    renderBreadcrumb();
+    // Paint the viewer first: renderStatus() reads state.imagePath for its copy.
+    showImageViewer(path);
+    renderStatus();
+    refreshUploadResults();
+  }
+
+  /** @param {string} path */
   async function openFile(path) {
     if (!path) return;
+    if (isImagePath(path)) {
+      await openImage(path);
+      return;
+    }
+    hideImageViewer();
     if (state.currentPath === path && state.editor) {
       tree.setCurrent(path);
       return;
@@ -1107,6 +1559,7 @@ export function mountApp(host, opts) {
       : { line: 0, ch: 0 };
     renderCursor(pos);
     collab.reportPresence(pos, 0);
+    refreshUploadResults();
     renderStatus();
   }
 
@@ -1133,7 +1586,7 @@ export function mountApp(host, opts) {
       breadcrumb.append(
         el("span", { class: "crumb-empty", text: "未打开文件" }),
       );
-      statusFile.textContent = "—";
+      statusFile.textContent = "";
       return;
     }
     const parts = state.currentPath.split("/");
@@ -1183,10 +1636,10 @@ export function mountApp(host, opts) {
       el("span", { class: "collab-count-num", text: String(state.online) }),
       " 人",
     );
-    statusFile.textContent = state.currentPath || "—";
+    statusFile.textContent = state.currentPath || "";
     if (state.currentPath) {
       selfFile.replaceChildren(
-        "正在编辑 ",
+        state.imagePath ? "正在查看 " : "正在编辑 ",
         el("span", {
           class: "peer-file-name",
           text: baseName(state.currentPath),
@@ -1197,6 +1650,27 @@ export function mountApp(host, opts) {
     }
     renderSave();
     renderWords();
+  }
+
+  /** The collapsed strip: one dot per person, own row included. */
+  function renderRailPeers() {
+    railPeers.innerHTML = "";
+    for (const peer of state.presence) {
+      const isMe = Boolean(
+        peer.id && state.user.id && peer.id === state.user.id,
+      );
+      railPeers.append(
+        el("span", {
+          class: "collab-rail-dot",
+          style: `background:${peer.color || "var(--fg-3)"}`,
+          attrs: {
+            title: `${peer.username || "匿名"}${isMe ? "（你）" : ""}`,
+          },
+        }),
+      );
+    }
+    railCountText.textContent = String(state.online);
+    railCountText.title = `在线 ${state.online} 人`;
   }
 
   function renderPresence(users) {
@@ -1233,6 +1707,7 @@ export function mountApp(host, opts) {
     }
     state.seenPeers = new Set(state.presence.map((peer) => peer.id));
     paintTreePresence();
+    renderRailPeers();
     renderStatus();
   }
 
@@ -1402,6 +1877,96 @@ export function mountApp(host, opts) {
   window.addEventListener("pointermove", onSplitMove);
   window.addEventListener("pointerup", onSplitUp);
 
+  // Collab rail: same interaction language as the file tree — drag the left
+  // edge, double click for the default width, one button to fold it away.
+  let railCollapsed = lsGet(LS.rail, "0") === "1";
+
+  /** Read a layout token as a number so the rail default tracks the design. */
+  function tokenPx(name, fallback) {
+    try {
+      const raw = getComputedStyle(shell).getPropertyValue(name).trim();
+      const num = parseFloat(raw);
+      return Number.isFinite(num) ? num : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  const RAIL_DEFAULT = Math.round(tokenPx("--rail-w", 236));
+  let railWidth = Number(lsGet(LS.railW, "0")) || 0;
+  if (railWidth) railWidth = Math.min(RAIL_MAX, Math.max(RAIL_MIN, railWidth));
+
+  function applyRailWidth() {
+    const value = Math.round(railWidth || RAIL_DEFAULT);
+    collabResizer.setAttribute("aria-valuenow", String(value));
+    if (railCollapsed) {
+      shell.style.setProperty("--rail-w", `${RAIL_RAIL}px`);
+      return;
+    }
+    if (railWidth) shell.style.setProperty("--rail-w", `${value}px`);
+    else shell.style.removeProperty("--rail-w");
+  }
+
+  function applyRail() {
+    shell.classList.toggle("rail-collapsed", railCollapsed);
+    lsSet(LS.rail, railCollapsed ? "1" : "0");
+    applyRailWidth();
+  }
+
+  function toggleRail() {
+    railCollapsed = !railCollapsed;
+    applyRail();
+    state.editor && state.editor.layout && state.editor.layout();
+  }
+  applyRail();
+
+  let resizingRail = false;
+  function setRailWidth(next) {
+    railWidth = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(next)));
+    applyRailWidth();
+  }
+  const onRailMove = (ev) => {
+    if (!resizingRail) return;
+    const rect = shell.getBoundingClientRect();
+    setRailWidth(rect.right - ev.clientX);
+  };
+  const onRailUp = () => {
+    if (!resizingRail) return;
+    resizingRail = false;
+    collabResizer.classList.remove("is-dragging");
+    document.body.classList.remove("is-resizing");
+    lsSet(LS.railW, String(Math.round(railWidth || RAIL_DEFAULT)));
+    state.editor && state.editor.layout && state.editor.layout();
+  };
+  collabResizer.addEventListener("pointerdown", (ev) => {
+    if (railCollapsed) return;
+    resizingRail = true;
+    collabResizer.classList.add("is-dragging");
+    collabResizer.setPointerCapture?.(ev.pointerId);
+    document.body.classList.add("is-resizing");
+  });
+  collabResizer.addEventListener("dblclick", () => {
+    if (railCollapsed) return;
+    railWidth = 0;
+    lsSet(LS.railW, "0");
+    applyRailWidth();
+    state.editor && state.editor.layout && state.editor.layout();
+    toastInfo("协作栏已恢复默认宽度");
+  });
+  // Keyboard equivalent of dragging: the handle is focusable, arrows resize.
+  collabResizer.addEventListener("keydown", (ev) => {
+    if (railCollapsed) return;
+    let step = 0;
+    if (ev.key === "ArrowLeft") step = RAIL_STEP;
+    else if (ev.key === "ArrowRight") step = -RAIL_STEP;
+    if (!step) return;
+    ev.preventDefault();
+    setRailWidth((railWidth || RAIL_DEFAULT) + step);
+    lsSet(LS.railW, String(Math.round(railWidth)));
+    state.editor && state.editor.layout && state.editor.layout();
+  });
+  window.addEventListener("pointermove", onRailMove);
+  window.addEventListener("pointerup", onRailUp);
+
   // Ctrl/Cmd+S is meaningless here: the server persists every change.
   const onKeyDown = (ev) => {
     const mod = ev.ctrlKey || ev.metaKey;
@@ -1553,6 +2118,8 @@ export function mountApp(host, opts) {
     window.removeEventListener("pointerup", onTreeUp);
     window.removeEventListener("pointermove", onSplitMove);
     window.removeEventListener("pointerup", onSplitUp);
+    window.removeEventListener("pointermove", onRailMove);
+    window.removeEventListener("pointerup", onRailUp);
     resizeObserver && resizeObserver.disconnect();
     try {
       if (state.editorObserver)

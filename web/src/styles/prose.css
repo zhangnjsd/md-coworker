@@ -131,7 +131,7 @@
 }
 
 .markdown-body .task-box:checked::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 3px;
   top: 2px;
@@ -146,7 +146,7 @@
   color: var(--fg-3);
 }
 
-.markdown-body input[type='checkbox'] {
+.markdown-body input[type="checkbox"] {
   accent-color: var(--accent);
   margin-right: 0.4em;
 }
@@ -176,6 +176,24 @@
   max-width: 100%;
   height: auto;
   border-radius: var(--r-sm);
+}
+
+/* Missing asset: name the file and offer the next step rather than a broken icon. */
+.img-missing {
+  display: inline-flex;
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.img-missing a {
+  color: var(--accent);
 }
 
 .markdown-body table {
@@ -516,7 +534,7 @@
 }
 
 .monaco-editor .yRemoteSelectionHead::after {
-  content: '';
+  content: "";
   position: absolute;
   top: -1.2em;
   left: -2px;

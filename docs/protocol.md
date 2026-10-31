@@ -78,7 +78,7 @@
 
 ## 4. 文件与目录
 
-- `GET /api/files` → `200 {"root":"<工作区绝对路径>","tree":[Node...]}`
+- `GET /api/files` → `200 {"tree":[Node...]}`（不含工作区绝对路径，见 §10）
   ```json
   {"name":"notes","path":"notes","kind":"dir","mtime":1690000000000,
    "children":[{"name":"a.md","path":"notes/a.md","kind":"file","size":123,"mtime":1690000000000}]}
@@ -89,6 +89,8 @@
 - `POST /api/files` `{"path":"notes/b.md","kind":"file"|"dir","content":"# hi"}`
   → `200 {"path":"notes/b.md"}`；已存在 `409 file_exists`。
 - `POST /api/files/rename` `{"from":"notes/b.md","to":"notes/c.md"}` → `200 {"path":"notes/c.md"}`
+  同时用于**移动**：`to` 可以指向另一个目录（`notes/b.md` → `assets/b.md`），目的目录会被自动创建。
+  目标已存在 `409 file_exists`；文件正在协作编辑 `409 file_busy`；把目录移入它自己/它的子目录、或原地不动 `400 bad_path`。
 - `POST /api/files/delete` `{"path":"notes/c.md"}` → `200 {"ok":true}`
 
 ## 5. 实时协作 WebSocket

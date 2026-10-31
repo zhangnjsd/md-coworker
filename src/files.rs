@@ -10,7 +10,7 @@ use crate::{
     error::{ApiResult, AppError},
     models::AppState,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use axum::{
     Json,
     extract::{Query, State},
@@ -442,6 +442,14 @@ pub async fn rename_entry(
     if abs_to.exists() {
         return Err(AppError::conflict("file_exists", "目标路径已存在"));
     }
+    // A directory cannot be moved into itself or into one of its own children:
+    // `rename` would fail on the second case, and both are meaningless moves.
+    if to == from || to.starts_with(&format!("{from}/")) {
+        return Err(AppError::bad_request(
+            "bad_path",
+            "不能把目录移动到它自己或它的子目录里",
+        ));
+    }
     if let Some(parent) = abs_to.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("创建父目录失败: {}", parent.display()))
@@ -495,10 +503,18 @@ pub async fn delete_entry(
 }
 
 /// Read a file as text; the collaboration layer uses it to seed a CRDT document.
-pub fn read_text_lossy(abs: &Path) -> Result<String> {
+///
+/// Binary files are rejected with `415 unsupported_media` rather than a bare 500, so the
+/// browser can explain that an image or an archive has no text to collaborate on.
+pub fn read_text_lossy(abs: &Path, rel: &str) -> Result<String, AppError> {
     let raw = std::fs::read(abs).with_context(|| format!("读取文件失败: {}", abs.display()))?;
-    let text = String::from_utf8(raw).map_err(|_| anyhow!("文件不是合法的 UTF-8 文本"))?;
-    Ok(text)
+    String::from_utf8(raw).map_err(|_| {
+        AppError::new(
+            axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media",
+            format!("{rel} 不是 UTF-8 文本文件"),
+        )
+    })
 }
 
 #[cfg(test)]

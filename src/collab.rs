@@ -270,8 +270,7 @@ impl Hub {
                 tracing::info!(path, "CRDT 快照已过期，按磁盘内容重建");
                 let _ = std::fs::remove_file(&snapshot);
             }
-            let content = files::read_text_lossy(&abs)
-                .with_context(|| format!("读取初始内容失败: {path}"))?;
+            let content = files::read_text_lossy(&abs, path)?;
             if !content.is_empty() {
                 let mut txn = doc.transact_mut();
                 text.insert(&mut txn, 0, &content);

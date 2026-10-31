@@ -8,9 +8,17 @@
 
 /* ==================================================================== frame */
 
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  overflow: hidden;
+}
+
 .view-app {
   display: block;
-  height: 100%;
+  height: 99.5%;
   min-height: 0;
   overflow: hidden;
 }
@@ -317,7 +325,8 @@
   user-select: none;
   transition:
     background-color var(--dur-1) var(--ease-out),
-    box-shadow var(--dur-1) var(--ease-out);
+    box-shadow var(--dur-1) var(--ease-out),
+    opacity var(--dur-1) var(--ease-out);
 }
 
 .tree-row:hover {
@@ -325,12 +334,12 @@
 }
 
 /* Directories read one step back so files stay the loudest thing in the tree. */
-.tree-row[data-kind='dir'] {
+.tree-row[data-kind="dir"] {
   color: var(--fg-2);
 }
 
-.tree-row[data-kind='dir']:hover,
-.tree-row[data-kind='dir'].active {
+.tree-row[data-kind="dir"]:hover,
+.tree-row[data-kind="dir"].active {
   color: var(--fg);
 }
 
@@ -342,6 +351,24 @@
 
 .tree-row:focus-visible {
   outline-offset: -2px;
+}
+
+/* Drag and drop: the row being carried fades out, the row that would receive
+ * it gets a hairline of accent instead of a filled, loud target. */
+.tree-row.is-dragging {
+  opacity: 0.45;
+}
+
+.tree-row.is-drop-target {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Blank space under the rows is the workspace root: dropping there moves the
+ * node back to the top level. */
+.tree.is-drop-target {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
 }
 
 .tree-caret {
@@ -517,7 +544,7 @@
 }
 
 .splitter::before {
-  content: '';
+  content: "";
   position: absolute;
   inset-block: 0;
   left: 2px;
@@ -526,7 +553,7 @@
 }
 
 .splitter::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0 -2px;
 }
@@ -641,6 +668,7 @@ body.is-resizing .splitter {
 /* ========================================================= collaborator rail */
 
 .collab-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -664,6 +692,10 @@ body.is-resizing .splitter {
   font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--fg-2);
+}
+
+.collab-head .rail-toggle {
+  flex: 0 0 auto;
 }
 
 .collab-count {
@@ -810,6 +842,75 @@ body.is-resizing .splitter {
   color: var(--fg-2);
 }
 
+/* Width handle: the mirror of .sidebar-resizer, 5px hit area, hairline. */
+.collab-resizer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 5px;
+  height: 100%;
+  background: transparent;
+  cursor: col-resize;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.collab-resizer:hover,
+.collab-resizer:focus-visible,
+.collab-resizer.is-dragging {
+  background: var(--accent-line);
+}
+
+.collab-resizer:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Folded rail: a 44px strip of people, the shape the sidebar uses too. */
+.collab-rail {
+  display: none;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 0;
+  overflow: hidden;
+  padding-block: var(--sp-2);
+}
+
+.collab-rail-peers {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.collab-rail-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: var(--r-full);
+}
+
+.collab-rail-count {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell.rail-collapsed .collab-head,
+.app-shell.rail-collapsed .collab-list,
+.app-shell.rail-collapsed .collab-resizer {
+  display: none;
+}
+
+.app-shell.rail-collapsed .collab-rail {
+  display: flex;
+}
+
 /* =============================================================== status bar */
 
 .statusbar {
@@ -855,6 +956,11 @@ body.is-resizing .splitter {
 
 .status-right .status-item + .status-item {
   border-left: 1px solid var(--line-soft);
+}
+
+/* .status-item is inline-flex, so [hidden] needs saying out loud. */
+.status-item[hidden] {
+  display: none;
 }
 
 /* =================================================================== upload */
@@ -1016,4 +1122,175 @@ body.is-resizing .splitter {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* -------------------------------------------------------------- image pane */
+
+/* An image is not a document: it takes the whole middle area and the two text
+   panes step aside instead of being painted behind it. */
+.center.has-image {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.center.has-image > .pane-editor,
+.center.has-image > .splitter,
+.center.has-image > .pane-preview {
+  display: none;
+}
+
+.pane-image {
+  min-width: 0;
+  background: var(--bg-editor);
+}
+
+.pane-image[hidden] {
+  display: none;
+}
+
+.pane-image .pane-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-height: 0;
+  padding: var(--sp-3);
+}
+
+.image-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.image-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--r-sm);
+}
+
+.image-img[hidden] {
+  display: none;
+}
+
+.image-error {
+  max-width: 46ch;
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--fg-2);
+  text-align: center;
+}
+
+.image-error[hidden] {
+  display: none;
+}
+
+.image-caption {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line-soft);
+}
+
+.image-facts {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.image-name {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-size,
+.image-dims {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+}
+
+.image-note {
+  flex: 0 0 auto;
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+}
+
+.image-open {
+  flex: 0 0 auto;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-meta);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.image-open:hover {
+  text-decoration: underline;
+}
+
+.image-open:focus-visible {
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------- insert at cursor rows */
+
+/* Sits inside .upload-progress after a finished batch: one row per uploaded
+   image, each able to drop a reference at the cursor. */
+.upload-results {
+  display: grid;
+  gap: var(--sp-1);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line-soft);
+}
+
+.upload-results[hidden] {
+  display: none;
+}
+
+.upload-result {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.upload-result-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-result-size {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+}
+
+.upload-insert {
+  flex: 0 0 auto;
+}
+
+.upload-insert.is-done {
+  color: var(--fg-3);
 }

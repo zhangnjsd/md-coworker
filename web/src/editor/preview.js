@@ -189,19 +189,60 @@ function normalizeRelPath(path) {
   return out.join("/");
 }
 
+function decodePath(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+// markdown-it hands over a URL it has already percent-encoded, so `Screenshot 1.png`
+// arrives as `Screenshot%201.png`. Decode first, re-encode once at the end, otherwise
+// the space becomes `%2520` and the request 404s.
 function resolveAssetUrl(src) {
   const value = String(src || "").trim();
   if (!value) return src;
   if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("//")) return src;
-  if (value.startsWith("/")) return value;
-  const slash = basePath.lastIndexOf("/");
-  const dir = slash >= 0 ? basePath.slice(0, slash) : "";
-  const withoutSuffix = value.replace(/[?#].*$/, "");
-  const joined = normalizeRelPath(
-    dir ? `${dir}/${withoutSuffix}` : withoutSuffix,
-  );
-  const suffix = value.slice(withoutSuffix.length);
+  const cut = value.search(/[?#]/);
+  const pathPart = cut >= 0 ? value.slice(0, cut) : value;
+  const suffix = cut >= 0 ? value.slice(cut) : "";
+  const decoded = decodePath(pathPart);
+  // A leading slash means "from the workspace root", because the preview is not
+  // served from the workspace and `/foo.png` would otherwise hit the SPA shell.
+  const joined = decoded.startsWith("/")
+    ? normalizeRelPath(decoded)
+    : normalizeRelPath(baseDir() ? `${baseDir()}/${decoded}` : decoded);
   return `/api/raw?path=${encodeURIComponent(joined)}${suffix}`;
+}
+
+function baseDir() {
+  const slash = basePath.lastIndexOf("/");
+  return slash >= 0 ? basePath.slice(0, slash) : "";
+}
+
+// A missing asset should say which file is missing and offer the next step,
+// instead of leaving the browser's broken-image icon in the middle of the text.
+function markBrokenImage(img) {
+  if (!img.isConnected || img.dataset.mcMissing === "1") return;
+  if (img.naturalWidth > 0) return;
+  img.dataset.mcMissing = "1";
+  const src = img.getAttribute("src") || "";
+  const shown = decodePath(
+    src.replace(/^\/api\/raw\?path=/, "").split(/[?#]/)[0],
+  );
+  const notice = document.createElement("span");
+  notice.className = "img-missing";
+  notice.textContent = `图片无法加载：${shown || "未知路径"}`;
+  if (src) {
+    const link = document.createElement("a");
+    link.href = src;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "单独打开";
+    notice.append(" ", link);
+  }
+  img.replaceWith(notice);
 }
 
 // Links open outside the SPA but never hand the opener over to the target page.
@@ -359,12 +400,20 @@ export function createPreview(opts) {
     restoreAfterRender(wanted);
   };
 
+  // Missing assets are reported even when there is no anchor to hold, so the sweep
+  // runs for every render; only the re-anchoring needs a saved position.
   const reanchorOnMedia = (anchor) => {
-    if (!anchor) return;
     for (const img of container.querySelectorAll("img")) {
-      if (img.complete) continue;
-      img.addEventListener("load", () => restoreLater(anchor), { once: true });
-      img.addEventListener("error", () => restoreLater(anchor), { once: true });
+      const settle = () => {
+        markBrokenImage(img);
+        if (anchor) restoreLater(anchor);
+      };
+      if (img.complete) {
+        settle();
+        continue;
+      }
+      img.addEventListener("load", settle, { once: true });
+      img.addEventListener("error", settle, { once: true });
     }
   };
 
