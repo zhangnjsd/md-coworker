@@ -150,6 +150,12 @@ CREATE TABLE IF NOT EXISTS mfa_tickets (
     expires_at BIGINT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_expiry ON challenges(expires_at);
 CREATE INDEX IF NOT EXISTS idx_mfa_tickets_expiry ON mfa_tickets(expires_at);
@@ -431,6 +437,34 @@ impl Db {
             .bind(ticket)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ settings
+
+    /// Read one setting; `None` when the key was never written.
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .with_context(|| format!("读取配置失败: {key}"))?;
+        Ok(value)
+    }
+
+    /// Upsert one setting.
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, \
+             updated_at = EXCLUDED.updated_at",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("保存配置失败: {key}"))?;
         Ok(())
     }
 

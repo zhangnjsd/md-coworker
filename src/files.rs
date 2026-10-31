@@ -184,7 +184,7 @@ pub fn language_for(path: &str) -> &'static str {
 
 #[derive(Deserialize)]
 pub struct FileQuery {
-    path: Option<String>,
+    pub path: Option<String>,
 }
 
 pub async fn list_files(State(state): State<AppState>, _auth: AuthUser) -> ApiResult<Json<Value>> {

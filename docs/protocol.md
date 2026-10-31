@@ -165,3 +165,54 @@
 - 服务端收到 `update` 后**不回显给发送者**（`from_conn` 过滤），避免本地重复应用。
 - 协作中的文件被 `POST /api/files/{rename,delete}` 命中时返回 `409 file_busy`；
   房间没有成员后会立刻保存并从内存回收，快照若比磁盘文件旧会被视为过期并丢弃。
+
+## 9. 文件上传与原始资源（v1.2）
+
+### 9.1 上传大小阈值
+
+阈值由管理员设置，存在 PostgreSQL 的 `settings` 表（键 `max_upload_bytes`），未设置时默认
+`10485760`（10 MiB），合法范围 `1024 … 536870912`（1 KiB … 512 MiB）。
+
+- `GET /api/settings`（任何登录用户）
+  → `200 {"max_upload_bytes":10485760}`
+- `GET /api/admin/settings`（管理员）
+  → `200 {"settings":{"max_upload_bytes":10485760}}`
+- `PATCH /api/admin/settings`（管理员）`{"max_upload_bytes":20971520}`
+  → `200 {"settings":{"max_upload_bytes":20971520}}`；越界 → `400 {"error":{"code":"bad_limit"}}`
+
+### 9.2 `POST /api/files/upload?dir=<相对目录>&overwrite=0|1`
+
+`multipart/form-data`，一个或多个 `file` 字段；`dir` 缺省为工作区根，不存在会自动创建。
+单次请求最多 20 个文件。
+
+- 文件名只取客户端文件名的**最后一段**（`/`、`\` 之后的部分），并拒绝空名、`.`、`..`、
+  以 `.` 开头的隐藏名、含 `\0` 的名字，超长（> 200 字节）也拒绝 → `400 bad_filename`。
+- 同名文件已存在且 `overwrite` 不为真 → `409 file_exists`；`overwrite=1` 时原地覆盖
+  （先写临时文件再 `rename`，不会留下半个文件）。
+- 单文件超过阈值 → `413 {"error":{"code":"too_large"}}`，message 里带人类可读的上限；
+  超限时服务端已写入的临时文件会被删除，目录里不会出现残缺文件。
+- 成功 → `201`
+  ```json
+  {"dir":"assets","files":[
+    {"path":"assets/logo.png","size":10234,"kind":"image","url":"/api/raw?path=assets%2Flogo.png"}]}
+  ```
+  `kind` ∈ `image` | `text` | `other`（按扩展名与内容嗅探）。
+- 语料里没有"上传到协作中的 Markdown 文件"这种情形：上传只写磁盘，不会改动 CRDT 房间；
+  若目标路径正在被协作编辑，返回 `409 file_busy`。
+
+### 9.3 `GET /api/raw?path=<相对路径>`
+
+返回文件原始字节（图片、PDF、字体、二进制附件；也接受文本文件）。
+
+- `Content-Type` 由扩展名决定（`png`/`jpeg`/`gif`/`webp`/`avif`/`svg`/`pdf`/`txt`…），
+  未知扩展名按 `application/octet-stream` 并附 `Content-Disposition: attachment`。
+- 一律带 `X-Content-Type-Options: nosniff`；`svg` 额外带
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
+  防止内联脚本。
+- `Cache-Control: private, max-age=60`（图片会被预览反复引用）。
+- 目录、不存在、路径非法 → `404` / `400`，与 `/api/file` 一致。
+
+### 9.4 Markdown 里的图片
+
+预览渲染时把**相对路径的图片**改写为 `/api/raw?path=<按当前文档所在目录解析后编码>`，
+`http(s)://`、`data:`、已有 `/api/` 前缀的地址保持不变，这样 `![](assets/x.png)` 能直接显示。

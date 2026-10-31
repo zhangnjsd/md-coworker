@@ -12,6 +12,8 @@ mod db;
 mod error;
 mod files;
 mod models;
+mod settings;
+mod upload;
 
 use anyhow::{Context, Result};
 use collab::Hub;

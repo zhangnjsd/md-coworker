@@ -1,6 +1,6 @@
 //! HTTP route wiring, including static frontend delivery.
 
-use crate::{admin, auth, collab, files, models::AppState};
+use crate::{admin, auth, collab, files, models::AppState, settings, upload};
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::{
     Json, Router,
@@ -39,11 +39,23 @@ pub fn router(state: AppState) -> Router {
             patch(admin::patch_user).delete(admin::delete_user),
         )
         .route("/admin/users/{id}/keypair", post(admin::reset_keypair))
+        .route(
+            "/admin/settings",
+            get(settings::admin_get_settings).patch(settings::admin_patch_settings),
+        )
+        .route("/settings", get(settings::public_settings))
         // --- files ---
         .route("/files", get(files::list_files).post(files::create_entry))
         .route("/file", get(files::read_file))
         .route("/files/rename", post(files::rename_entry))
-        .route("/files/delete", post(files::delete_entry));
+        .route("/files/delete", post(files::delete_entry))
+        .route(
+            // Uploads are size-checked while streaming, against the limit an
+            // administrator sets, so the body limit must not reject them first.
+            "/files/upload",
+            post(upload::upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/raw", get(upload::raw));
 
     let static_dir = state.cfg.static_dir.clone();
     let index = static_dir.join("index.html");
