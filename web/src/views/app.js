@@ -9,7 +9,7 @@ import { createMarkdownEditor } from '../editor/markdown.js'
 import { createPreview } from '../editor/preview.js'
 import { openSettings } from './settings.js'
 
-// Monaco (3.4MB) loads lazily only for non-Markdown files; first paint uses CodeMirror only.
+// Monaco (3.4 MiB) loads lazily only for non-Markdown files; first paint uses CodeMirror only.
 function isMarkdownPath(path) {
   return /\.(md|markdown)$/i.test(path || '')
 }
@@ -78,6 +78,8 @@ const ICON_PATHS = {
   plus: '<path d="M8 3.5v9M3.5 8h9" />',
   'folder-plus':
     '<path d="M2.25 5.4c0-.77.63-1.4 1.4-1.4h2.2c.42 0 .82.19 1.09.51l.71.85h5.9c.77 0 1.4.63 1.4 1.4v4.9c0 .77-.63 1.4-1.4 1.4H3.65c-.77 0-1.4-.63-1.4-1.4z" /><path d="M8 8.5v3M6.5 10h3" />',
+  upload:
+    '<path d="M8 10.4V3.2" /><path d="M5.2 6 8 3.2 10.8 6" /><path d="M2.8 10.4v1.8c0 .77.63 1.4 1.4 1.4h7.6c.77 0 1.4-.63 1.4-1.4v-1.8" />',
   refresh:
     '<path d="M13.1 8A5.1 5.1 0 1 1 11.5 4.3" /><path d="M13.3 2.7v3.1h-3.1" />',
   'panel-left':
@@ -214,14 +216,59 @@ export function mountApp(host, opts) {
   const newFileBtn = iconBtn('plus', '新建文件', () => createEntry('file'))
   const newDirBtn = iconBtn('folder-plus', '新建文件夹', () => createEntry('dir'))
   const refreshBtn = iconBtn('refresh', '刷新文件树', () => reloadTree(true))
+  const uploadBtn = iconBtn('upload', '上传文件', () => pickFiles())
   const collapseBtn = iconBtn('panel-left', '收起文件树', () => toggleSidebar(), 'rail-toggle')
   const expandBtn = iconBtn('panel-left', '展开文件树', () => toggleSidebar(), 'rail-toggle')
+
+  // Hidden picker shared by the toolbar button and Mod+Shift+U. Hidden by class
+  // (display:none), never laid out, never in the tab order.
+  const uploadInput = el('input', {
+    class: 'hidden-file',
+    attrs: { type: 'file', multiple: '', tabindex: '-1', 'aria-hidden': 'true', 'aria-label': '选择要上传的文件' },
+    on: {
+      change: () => {
+        const picked = uploadInput.files ? Array.from(uploadInput.files) : []
+        uploadInput.value = ''
+        if (picked.length) beginUpload(picked)
+      },
+    },
+  })
+
+  // One strip under .sidebar-head for the whole batch: name, percent, bar.
+  const uploadName = el('span', { class: 'upload-progress-name', text: '' })
+  const uploadPct = el('span', { class: 'upload-progress-pct', text: '0%' })
+  const uploadFill = el('div', { class: 'upload-progress-fill' })
+  const uploadMeta = el('span', { class: 'upload-progress-meta', text: '' })
+  const uploadTrack = el(
+    'div',
+    {
+      class: 'upload-progress-track',
+      attrs: {
+        role: 'progressbar',
+        'aria-label': '上传进度',
+        'aria-valuemin': '0',
+        'aria-valuemax': '100',
+        'aria-valuenow': '0',
+        'aria-valuetext': '上传进度 0%',
+      },
+    },
+    uploadFill,
+  )
+  const uploadProgress = el(
+    'div',
+    { class: 'upload-progress', attrs: { role: 'group', 'aria-label': '上传进度' } },
+    el('div', { class: 'upload-progress-head' }, uploadName, uploadPct),
+    uploadTrack,
+    uploadMeta,
+  )
+  uploadProgress.hidden = true
 
   const sidebarRail = el(
     'div',
     { class: 'sidebar-rail' },
     expandBtn,
     iconBtn('plus', '新建文件', () => createEntry('file')),
+    iconBtn('upload', '上传文件', () => pickFiles()),
     iconBtn('refresh', '刷新文件树', () => reloadTree(true)),
   )
 
@@ -237,8 +284,10 @@ export function mountApp(host, opts) {
       'div',
       { class: 'sidebar-head' },
       el('span', { class: 'sidebar-title', text: '文件' }),
-      el('div', { class: 'sidebar-tools' }, newFileBtn, newDirBtn, refreshBtn, collapseBtn),
+      el('div', { class: 'sidebar-tools' }, uploadBtn, newFileBtn, newDirBtn, refreshBtn, collapseBtn),
     ),
+    uploadProgress,
+    uploadInput,
     el('div', { class: 'sidebar-body' }, treeHost),
     sidebarRail,
     sidebarResizer,
@@ -336,6 +385,23 @@ export function mountApp(host, opts) {
     el('div', { class: 'status-right' }, statusCursor, statusWords, statusOnline, statusSave),
   )
 
+  // Full-window drop target: a scrim plus the destination, nothing more.
+  // position:fixed keeps it out of .app-shell's grid rows.
+  const dropTarget = el('span', { class: 'drop-target', text: '工作区根目录' })
+  const dropLimit = el('span', { class: 'drop-limit', text: '' })
+  const dropOverlay = el(
+    'div',
+    { class: 'drop-overlay', attrs: { 'aria-hidden': 'true' } },
+    el(
+      'div',
+      { class: 'drop-zone' },
+      el('span', { class: 'drop-icon' }, icon('upload', 24)),
+      el('span', { class: 'drop-title' }, '松手上传到 ', dropTarget),
+      dropLimit,
+    ),
+  )
+  dropOverlay.hidden = true
+
   const shell = el(
     'div',
     { class: 'app-shell' },
@@ -343,6 +409,7 @@ export function mountApp(host, opts) {
     el('div', { class: 'app-body' }, sidebar, center, collabPanel),
     statusbar,
   )
+  shell.append(dropOverlay)
   host.append(shell)
 
   // ------------------------------------------------------------ collab setup
@@ -523,6 +590,235 @@ export function mountApp(host, opts) {
     }
   }
 
+  // ---------------------------------------------------------------- upload IO
+
+  const MAX_UPLOAD_BATCH = 20
+  // 0 means "unknown": the settings read failed, so we never pre-check and let
+  // the server's 413 speak for itself. Silent degrade, never a blocked upload.
+  let maxUploadBytes = 0
+  let uploading = false
+  let uploadToken = 0
+  // dragenter/dragleave fire once per element crossed, so they are counted
+  // rather than toggled; the overlay only leaves at zero.
+  let dragDepth = 0
+
+  function trimNum(value) {
+    const rounded = Math.round(value * 10) / 10
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+  }
+
+  /** Human readable size: 10 MiB, 1.5 MiB, 512 KiB — binary units, spelled MiB. */
+  function fmtBytes(bytes) {
+    const n = Number(bytes) || 0
+    if (n >= 1024 * 1024 * 1024) return `${trimNum(n / (1024 * 1024 * 1024))} GiB`
+    if (n >= 1024 * 1024) return `${trimNum(n / (1024 * 1024))} MiB`
+    if (n >= 1024) return `${trimNum(n / 1024)} KiB`
+    return `${n} B`
+  }
+
+  /** Root has no path, so it needs a name of its own in copy. */
+  function dirLabel(dir) {
+    return dir ? dir : '工作区根目录'
+  }
+
+  function findTreeNode(nodes, path) {
+    for (const node of nodes || []) {
+      if (node.path === path) return node
+      if (node.children) {
+        const hit = findTreeNode(node.children, path)
+        if (hit) return hit
+      }
+    }
+    return null
+  }
+
+  /**
+   * Selected file → its parent folder; selected folder → itself; nothing
+   * selected → workspace root ('').
+   */
+  function uploadTargetDir() {
+    const selected = tree.getSelected ? tree.getSelected() : state.currentPath
+    if (!selected) return ''
+    const node = findTreeNode(state.tree, selected)
+    if (node && node.kind === 'dir') return selected
+    return parentPath(selected)
+  }
+
+  function pickFiles() {
+    if (state.destroyed) return
+    if (uploading) {
+      toastInfo('正在上传，请等这次上传完成')
+      return
+    }
+    uploadInput.value = ''
+    uploadInput.click()
+  }
+
+  /** True only for OS file drags, so splitter/row dragging is untouched. */
+  function isFileDrag(ev) {
+    const dt = ev && ev.dataTransfer
+    if (!dt || !dt.types) return false
+    const types = dt.types
+    for (let i = 0; i < types.length; i += 1) {
+      if (types[i] === 'Files') return true
+    }
+    return false
+  }
+
+  function paintDropOverlay() {
+    dropTarget.textContent = dirLabel(uploadTargetDir())
+    const batchNote = `一次最多 ${MAX_UPLOAD_BATCH} 个文件`
+    dropLimit.textContent = maxUploadBytes > 0 ? `单个文件上限 ${fmtBytes(maxUploadBytes)} · ${batchNote}` : batchNote
+  }
+
+  function showDropOverlay() {
+    paintDropOverlay()
+    if (!dropOverlay.hidden) return
+    dropOverlay.hidden = false
+    dropOverlay.setAttribute('aria-hidden', 'false')
+  }
+
+  function hideDropOverlay() {
+    dragDepth = 0
+    if (dropOverlay.hidden) return
+    dropOverlay.hidden = true
+    dropOverlay.setAttribute('aria-hidden', 'true')
+  }
+
+  function showUploadProgress(name, percent, index, count, dir) {
+    const pct = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)))
+    const position = count > 1 ? `正在上传 ${Math.min(index, count)}/${count} · ${pct}%` : ''
+    uploadProgress.hidden = false
+    uploadName.textContent = name
+    uploadName.title = name
+    uploadPct.textContent = `${pct}%`
+    uploadFill.style.transform = `scaleX(${(pct / 100).toFixed(3)})`
+    uploadTrack.setAttribute('aria-valuenow', String(pct))
+    uploadTrack.setAttribute('aria-valuetext', position || `正在上传 ${name} ${pct}%`)
+    uploadMeta.textContent = position || `上传到 ${dirLabel(dir)}`
+  }
+
+  function hideUploadProgress() {
+    uploadProgress.hidden = true
+    uploadFill.style.transform = 'scaleX(0)'
+    uploadTrack.setAttribute('aria-valuenow', '0')
+    uploadTrack.setAttribute('aria-valuetext', '上传进度 0%')
+  }
+
+  /**
+   * Upload a FileList/array into the current target directory.
+   * Oversized files are skipped one by one (with their own toast) so a single
+   * 200 MiB attachment never sinks the rest of the drop. Server-side limits stay
+   * authoritative: any 413 that slips through is reported per batch.
+   */
+  async function beginUpload(fileList, dirOverride) {
+    if (state.destroyed) return
+    const picked = Array.from(fileList || []).filter(Boolean)
+    if (!picked.length) return
+    if (uploading) {
+      toastWarn('已有上传在进行中，请等这次上传完成')
+      return
+    }
+    const dir = typeof dirOverride === 'string' ? dirOverride : uploadTargetDir()
+
+    const accepted = []
+    for (const file of picked) {
+      if (maxUploadBytes > 0 && file.size > maxUploadBytes) {
+        toastWarn(`${file.name} 超过 ${fmtBytes(maxUploadBytes)} 上限，已跳过`, 5200)
+        continue
+      }
+      accepted.push(file)
+    }
+    if (!accepted.length) return
+
+    uploading = true
+    const token = ++uploadToken
+    const totalBytes = accepted.reduce((sum, file) => sum + (file.size || 0), 0) || 1
+    const uploaded = []
+    let sentBytes = 0
+    let cancelled = false
+
+    try {
+      for (let start = 0; start < accepted.length; start += MAX_UPLOAD_BATCH) {
+        const batch = accepted.slice(start, start + MAX_UPLOAD_BATCH)
+        const batchBytes = batch.reduce((sum, file) => sum + (file.size || 0), 0)
+        const label = batch.length === 1 ? batch[0].name : `${batch[0].name} 等 ${batch.length} 个文件`
+        const base = sentBytes
+        const paint = (loaded) => {
+          if (token !== uploadToken) return
+          const done = Math.min(totalBytes, base + Math.max(0, Number(loaded) || 0))
+          showUploadProgress(label, (done / totalBytes) * 100, start + 1, accepted.length, dir)
+        }
+        paint(0)
+
+        let payload
+        try {
+          payload = await api.upload(dir, batch, { onProgress: paint })
+        } catch (err) {
+          if (!err || err.code !== 'file_exists') throw err
+          const conflictPath = dir ? `${dir}/${batch[0].name}` : batch[0].name
+          const overwrite = await confirmDialog({
+            title: '同名文件已存在',
+            message:
+              batch.length > 1
+                ? `${conflictPath} 等 ${batch.length} 个文件已存在，覆盖它们吗？`
+                : `${conflictPath} 已存在，覆盖它吗？`,
+            confirmLabel: '覆盖',
+            cancelLabel: '放弃上传',
+            danger: true,
+          })
+          if (!overwrite) {
+            cancelled = true
+            break
+          }
+          paint(0)
+          payload = await api.upload(dir, batch, { overwrite: true, onProgress: paint })
+        }
+        const list = payload && Array.isArray(payload.files) ? payload.files : []
+        uploaded.push(...list)
+        sentBytes += batchBytes
+      }
+    } catch (err) {
+      if (token === uploadToken) {
+        const code = err && err.code
+        if (code === 'too_many_files') toastError('一次最多上传 20 个文件，请分批上传')
+        else if (code === 'bad_filename') toastError('文件名不合法：不能以 . 开头，也不能含空字符，请改名后重试')
+        else if (code === 'file_busy') toastError('目标文件正在被协作编辑，请等所有人离开后再试')
+        else if (code === 'too_large')
+          toastError(
+            err.message || (maxUploadBytes > 0 ? `单个文件不能超过 ${fmtBytes(maxUploadBytes)}` : '文件太大，无法上传'),
+          )
+        else toastError(err && err.message ? err.message : '上传失败，请稍后重试')
+      }
+      return
+    } finally {
+      uploading = false
+      hideUploadProgress()
+    }
+
+    if (token !== uploadToken || state.destroyed) return
+    if (!uploaded.length) {
+      if (cancelled) toastInfo('已放弃上传')
+      else toastWarn('上传结束，但没有文件被保存')
+      return
+    }
+
+    await reloadTree(true)
+    if (cancelled) {
+      toastInfo(`已上传 ${uploaded.length} 个文件，其余已放弃`)
+      return
+    }
+    const firstMarkdown = uploaded.find((item) => isMarkdownPath(item.path))
+    if (firstMarkdown && !state.destroyed) {
+      try {
+        await openFile(firstMarkdown.path)
+      } catch {
+        /* 树已刷新，打开失败不影响上传结果 */
+      }
+    }
+    toastSuccess(`已上传 ${uploaded.length} 个文件到${dir ? `「${dir}」` : '工作区根目录'}`)
+  }
+
   // ------------------------------------------------------------------ editor
 
   async function closeEditor() {
@@ -546,6 +842,7 @@ export function mountApp(host, opts) {
     editorHost.innerHTML = ''
     editorEmpty.style.display = ''
     previewMeta.textContent = ''
+    if (preview.setBasePath) preview.setBasePath('')
     preview.renderEmpty('无可预览内容', '打开一个 Markdown 文件即可实时预览')
   }
 
@@ -632,6 +929,10 @@ export function mountApp(host, opts) {
 
     collab.setCurrentPath(path)
     setEditorMeta(md ? 'CodeMirror · Markdown' : `Monaco · ${path.split('.').pop()}`)
+
+    // Relative image paths (![](assets/x.png)) resolve against the open
+    // document; a non-markdown file gets no base, its preview is plain text.
+    if (preview.setBasePath) preview.setBasePath(md ? path : '')
 
     // Realtime preview / word count from the shared text.
     const updateText = () => {
@@ -919,12 +1220,55 @@ export function mountApp(host, opts) {
   // Ctrl/Cmd+S is meaningless here: the server persists every change.
   const onKeyDown = (ev) => {
     const mod = ev.ctrlKey || ev.metaKey
+    // Mod+Shift+U opens the file picker (plain Mod+U belongs to the browser).
+    if (mod && ev.shiftKey && !ev.altKey && (ev.key === 'u' || ev.key === 'U')) {
+      ev.preventDefault()
+      pickFiles()
+      return
+    }
     if (mod && (ev.key === 's' || ev.key === 'S')) {
       ev.preventDefault()
       toastInfo('已开启实时保存，编辑内容会自动同步到服务端')
+      return
     }
+    if (ev.key === 'Escape' && dragDepth > 0) hideDropOverlay()
   }
   window.addEventListener('keydown', onKeyDown, true)
+
+  // ------------------------------------------------------------ drag & drop
+
+  const onShellDragEnter = (ev) => {
+    if (!isFileDrag(ev)) return
+    ev.preventDefault()
+    dragDepth += 1
+    showDropOverlay()
+  }
+  const onShellDragOver = (ev) => {
+    if (!isFileDrag(ev)) return
+    ev.preventDefault()
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = uploading ? 'none' : 'copy'
+    showDropOverlay()
+  }
+  const onShellDragLeave = (ev) => {
+    if (!isFileDrag(ev)) return
+    dragDepth = Math.max(0, dragDepth - 1)
+    if (dragDepth === 0) hideDropOverlay()
+  }
+  const onShellDrop = (ev) => {
+    if (!isFileDrag(ev)) return
+    ev.preventDefault()
+    const dir = uploadTargetDir()
+    const dropped = ev.dataTransfer && ev.dataTransfer.files ? Array.from(ev.dataTransfer.files) : []
+    hideDropOverlay()
+    if (dropped.length) beginUpload(dropped, dir)
+  }
+
+  shell.addEventListener('dragenter', onShellDragEnter)
+  shell.addEventListener('dragover', onShellDragOver)
+  shell.addEventListener('dragleave', onShellDragLeave)
+  shell.addEventListener('drop', onShellDrop)
+  // Dropping outside the window (or cancelling the drag) fires no dragleave.
+  window.addEventListener('dragend', hideDropOverlay)
 
   // Keep Monaco sized with its pane.
   const resizeObserver =
@@ -969,7 +1313,20 @@ export function mountApp(host, opts) {
 
   renderSave()
   renderStatus()
+  if (preview.setBasePath) preview.setBasePath('')
   preview.renderEmpty('无可预览内容', '打开一个 Markdown 文件即可实时预览')
+  // Upload limit comes from the server; if that read fails we keep 0 (unknown)
+  // and skip the pre-check entirely — the backend's 413 stays authoritative.
+  api
+    .settings()
+    .then((settings) => {
+      const limit = Number(settings && settings.max_upload_bytes)
+      if (!Number.isFinite(limit) || limit <= 0) return
+      maxUploadBytes = limit
+      paintDropOverlay()
+    })
+    .catch(() => {})
+
   // Restore the file the user had open last time (only if it still exists).
   reloadTree().then(() => {
     if (state.destroyed) return
@@ -979,6 +1336,9 @@ export function mountApp(host, opts) {
 
   return () => {
     state.destroyed = true
+    // Invalidate any in-flight upload so its callbacks stop touching a dead view.
+    uploadToken += 1
+    hideDropOverlay()
     if (saveFallbackTimer) {
       clearTimeout(saveFallbackTimer)
       saveFallbackTimer = null
@@ -988,6 +1348,11 @@ export function mountApp(host, opts) {
       collab.leaveFile(state.currentPath)
     }
     window.removeEventListener('keydown', onKeyDown, true)
+    window.removeEventListener('dragend', hideDropOverlay)
+    shell.removeEventListener('dragenter', onShellDragEnter)
+    shell.removeEventListener('dragover', onShellDragOver)
+    shell.removeEventListener('dragleave', onShellDragLeave)
+    shell.removeEventListener('drop', onShellDrop)
     window.removeEventListener('pointermove', onTreeMove)
     window.removeEventListener('pointerup', onTreeUp)
     window.removeEventListener('pointermove', onSplitMove)

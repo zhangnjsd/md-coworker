@@ -38,6 +38,14 @@ function extOf(name) {
   return idx > 0 ? name.slice(idx + 1).toLowerCase() : ''
 }
 
+function containsPath(nodes, path) {
+  for (const node of nodes || []) {
+    if (node.path === path) return true
+    if (node.children && containsPath(node.children, path)) return true
+  }
+  return false
+}
+
 function rowIconName(node, open) {
   if (node.kind === 'dir') return open ? 'folder-open' : 'folder'
   const ext = extOf(node.name)
@@ -51,6 +59,7 @@ export class FileTree {
    * @param {HTMLElement} host
    * @param {{
    *   onOpen?: (path: string) => void,
+   *   onSelect?: (node: any) => void,
    *   onRename?: (node: any) => void,
    *   onDelete?: (node: any) => void,
    *   onRetry?: () => void,
@@ -61,6 +70,10 @@ export class FileTree {
     this.opts = opts
     this.nodes = []
     this.currentPath = null
+    /* Last row the user activated — a file OR a directory. Uploads read it to
+     * decide their target directory, so it is tracked separately from
+     * currentPath (which only ever holds an opened file). */
+    this.selectedPath = null
     this.loading = false
     this.error = ''
     /** @type {Set<string>} */
@@ -105,15 +118,31 @@ export class FileTree {
     this.nodes = Array.isArray(nodes) ? nodes : []
     this.loading = false
     this.error = ''
+    // A reload can delete the row that was selected (the upload target);
+    // never keep pointing at something that is gone.
+    if (this.selectedPath && !containsPath(this.nodes, this.selectedPath)) this.selectedPath = null
     if (this.currentPath) this.expandTo(this.currentPath, false)
     this.render()
   }
 
   setCurrent(path) {
     this.currentPath = path
+    this.selectedPath = path || null
     if (path) this.expandTo(path, true)
     this.render()
     this.#revealCurrent()
+  }
+
+  /** @returns {string|null} file or directory path the user last activated. */
+  getSelected() {
+    return this.selectedPath
+  }
+
+  setSelected(path) {
+    const next = path || null
+    if (this.selectedPath === next) return
+    this.selectedPath = next
+    this.render()
   }
 
   expandTo(path, persist = true) {
@@ -186,7 +215,7 @@ export class FileTree {
           'div',
           { class: 'tree-state' },
           el('span', { class: 'tree-state-title', text: '还没有文件' }),
-          el('span', { class: 'tree-state-hint', text: '用上方 新建文件 创建第一个 .md' }),
+          el('span', { class: 'tree-state-hint', text: '用上方 新建文件 创建第一个 .md，或把文件拖进窗口上传' }),
         ),
       )
       return
@@ -223,6 +252,10 @@ export class FileTree {
   }
 
   #activate(node) {
+    // Selecting a folder is meaningful now (it is the upload target), so the
+    // highlight follows every activated row instead of files only.
+    this.selectedPath = node.path || null
+    if (this.opts.onSelect) this.opts.onSelect(node)
     if (node.kind === 'dir') this.toggleDir(node.path)
     else if (this.opts.onOpen) this.opts.onOpen(node.path)
   }
@@ -270,7 +303,7 @@ export class FileTree {
   #renderRow(node, depth) {
     const isDir = node.kind === 'dir'
     const open = isDir && this.expanded.has(node.path)
-    const active = !isDir && node.path === this.currentPath
+    const active = Boolean(node.path) && node.path === this.selectedPath
 
     const caret = el(
       'span',

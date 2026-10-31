@@ -149,6 +149,25 @@ async function main() {
   check('预览渲染 KaTeX 公式', preview.katex);
   check('预览渲染 Mermaid 图表', preview.mermaid);
   check('预览渲染代码高亮', preview.code);
+
+  // The demo document embeds assets/architecture.png with a relative path.
+  // Lazy loading means it only starts once visible, so scroll to it first.
+  const image = await pageA.evaluate(async () => {
+    const img = document.querySelector('.markdown-body img');
+    if (!img) return null;
+    img.scrollIntoView({ block: 'center' });
+    const started = Date.now();
+    while (!img.complete && Date.now() - started < 5000) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return { src: img.getAttribute('src') || '', width: img.naturalWidth, height: img.naturalHeight };
+  });
+  check(
+    '预览把相对图片改写到 /api/raw',
+    !!image && image.src.startsWith('/api/raw?path=assets%2Farchitecture.png'),
+    JSON.stringify(image),
+  );
+  check('上传/静态图片真的加载出来了', !!image && image.width > 0 && image.height > 0, JSON.stringify(image));
   await pageA.screenshot({ path: '/tmp/shot-editor.png' });
 
   console.log('\n=== 3. 第二个用户（页面 B）加入同一文件 ===');
@@ -269,6 +288,96 @@ async function main() {
     check('Monaco 显示代码内容', codeText.includes('count_words'));
   }
   await pageA.screenshot({ path: '/tmp/shot-monaco.png' });
+
+  // Go back to the workspace: uploading happens from the editor screen.
+  await pageA.evaluate(() => {
+    location.hash = '#/app';
+  });
+  await pageA.waitForSelector('.app-shell', { timeout: 20000 });
+
+  // Puppeteer's file-chooser plumbing cannot hand real bytes to headless shell
+  // (the upload XHR ends in ERR_FILE_NOT_FOUND), so the two UI entry points are
+  // driven with a synthetic DataTransfer carrying a real File — the same events a
+  // drag from the desktop or a picked file would fire.
+  // Selecting a file at the workspace root makes the upload target the root
+  // directory, so the assertions below can use bare file names.
+  await pageA.click('.tree-row[data-path="README.md"]');
+  await sleep(400);
+
+  console.log('\n=== 8b. 拖拽上传（真实 UI 事件）===');
+  const uploadName = `upload-${Date.now().toString(36)}.md`;
+  const uploadBody = `# ${uploadName}\n\n从界面拖进来的示例文件。\n`;
+  const wsRoot = process.env.MC_WS_ROOT || 'demo-workspace';
+
+  const overlay = await pageA.evaluate(async (name) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(['# x\n'], name, { type: 'text/markdown' }));
+    const shell = document.querySelector('.app-shell');
+    shell.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer: dt }));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const node = document.querySelector('.drop-overlay');
+    const visible = !!node && !node.hasAttribute('hidden');
+    const text = node ? node.innerText.replace(/\s+/g, ' ').trim() : '';
+    return { visible, text };
+  }, uploadName);
+  check('拖入文件时出现上传遮罩', overlay.visible, JSON.stringify(overlay));
+  check('遮罩写清目标目录与上限', /工作区根目录/.test(overlay.text) && /MiB/.test(overlay.text), overlay.text);
+
+  const dropped = await pageA.evaluate(async ({ name, body }) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([body], name, { type: 'text/markdown' }));
+    const shell = document.querySelector('.app-shell');
+    shell.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+    shell.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
+    const started = Date.now();
+    while (Date.now() - started < 15000) {
+      if (document.querySelector(`.tree-row[data-path="${name}"]`)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return false;
+  }, { name: uploadName, body: uploadBody });
+  check('放下后文件树出现新文件', dropped);
+  check(
+    '上传的文件写入工作区且内容一致',
+    fs.existsSync(`${wsRoot}/${uploadName}`) && fs.readFileSync(`${wsRoot}/${uploadName}`, 'utf8') === uploadBody,
+  );
+  check('遮罩在上传结束后收起', await pageA.evaluate(() => document.querySelector('.drop-overlay')?.hasAttribute('hidden') !== false));
+  check('上传没有留下临时文件', !fs.readdirSync(wsRoot).some((n) => n.startsWith('.mc-upload-')));
+
+  console.log('\n=== 8c. 上传按钮（隐藏 input 的 change 事件）===');
+  const buttonName = `picked-${Date.now().toString(36)}.md`;
+  const picked = await pageA.evaluate(async (name) => {
+    const input = document.querySelector('input[type="file"]');
+    if (!input) return 'no-input';
+    const dt = new DataTransfer();
+    dt.items.add(new File([`# ${name}\n`], name, { type: 'text/markdown' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const started = Date.now();
+    while (Date.now() - started < 15000) {
+      if (document.querySelector(`.tree-row[data-path="${name}"]`)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return false;
+  }, buttonName);
+  check('通过文件选择器上传的文件进入文件树', picked === true, String(picked));
+  check('选择器上传的文件也落盘', fs.existsSync(`${wsRoot}/${buttonName}`));
+
+  // Both uploads auto-open as Markdown, which keeps a CRDT room alive; deleting a
+  // file that is still being collaborated on is refused with 409, so step away
+  // from it first and let the room be recycled.
+  await pageA.click('.tree-row[data-path="README.md"]');
+  await sleep(1000);
+
+  // Clean up through the API so repeated runs stay idempotent.
+  for (const path of [uploadName, buttonName]) {
+    const delUpload = await fetch(`${BASE}/api/files/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminApi.cookie },
+      body: JSON.stringify({ path }),
+    });
+    check(`清理上传的 ${path}`, delUpload.ok, `HTTP ${delUpload.status}`);
+  }
 
   console.log('\n=== 9. 管理员页面 ===');
   await pageA.evaluate(() => {

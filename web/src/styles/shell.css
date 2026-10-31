@@ -856,3 +856,164 @@ body.is-resizing .splitter {
 .status-right .status-item + .status-item {
   border-left: 1px solid var(--line-soft);
 }
+
+/* =================================================================== upload */
+
+/* Batch progress strip, right under .sidebar-head while files are in flight.
+ * Removed from layout (not just invisible) when the batch ends. */
+.upload-progress {
+  display: grid;
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-1);
+}
+
+.upload-progress[hidden] {
+  display: none;
+}
+
+.upload-progress-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.upload-progress-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-meta);
+  color: var(--fg-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-progress-pct {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+/* Track stays 3px: the fill animates by transform only, never by width. */
+.upload-progress-track {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--bg-3);
+}
+
+.upload-progress-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.upload-progress-meta {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The rail is 44px wide — a full strip has nowhere to go. */
+.app-shell.sidebar-collapsed .upload-progress {
+  display: none;
+}
+
+/* ============================================================== drop target */
+
+/* Fixed, not a grid child: it must sit over the whole window without adding a
+ * row to .app-shell's template. Below modal (100), above all shell content.
+ * pointer-events:none keeps dragenter/dragleave counting on real elements. */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-6);
+  background: var(--overlay);
+  pointer-events: none;
+  animation: drop-fade var(--dur-2) var(--ease-out);
+}
+
+.drop-overlay[hidden] {
+  display: none;
+}
+
+.drop-zone {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  max-width: min(28rem, 100%);
+  padding: var(--sp-6) var(--sp-7);
+  border: 1px dashed var(--accent-line);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  text-align: center;
+  animation: drop-rise var(--dur-3) var(--ease-out);
+}
+
+.drop-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.drop-title {
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+  color: var(--fg);
+}
+
+/* The destination directory — the one thing that must never be ambiguous. */
+.drop-target {
+  padding-inline: var(--sp-1);
+  border-radius: var(--r-xs);
+  background: var(--accent-soft);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--accent);
+}
+
+.drop-limit {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--fg-3);
+}
+
+@keyframes drop-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drop-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -16,6 +16,12 @@ const CODE_MESSAGES = {
   bad_request: '请求参数不正确',
   internal: '服务端内部错误',
   network_error: '无法连接服务端，请确认后端已启动',
+  bad_path: '路径不合法（不允许绝对路径或 ..）',
+  bad_filename: '文件名不合法',
+  too_large: '文件超过管理员设置的大小上限',
+  file_busy: '该文件正在被协作编辑，请等所有人离开后再试',
+  bad_limit: '大小上限必须在 1 KiB 到 512 MiB 之间',
+  too_many_files: '一次最多上传 20 个文件',
 }
 
 const STATUS_MESSAGES = {
@@ -24,6 +30,7 @@ const STATUS_MESSAGES = {
   403: '没有权限执行该操作',
   404: '资源不存在',
   409: '操作冲突：目标已存在',
+  413: '文件超过管理员设置的大小上限',
   415: '该文件不是 UTF-8 文本，无法在编辑器中打开',
   500: '服务端内部错误',
   502: '网关错误',
@@ -112,6 +119,53 @@ function mapServerMessage(code, message) {
 
 const post = (url, body) => request('POST', url, body === undefined ? {} : body)
 
+// Multipart uploads need XMLHttpRequest: fetch() cannot report upload progress,
+// and a 200 MB attachment deserves a real progress bar.
+function uploadMultipart(url, form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url, true)
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Accept', 'application/json')
+
+    if (onProgress && xhr.upload) {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) onProgress(event.loaded, event.total)
+      })
+    }
+
+    xhr.addEventListener('load', () => {
+      let data = null
+      try {
+        data = xhr.responseText ? JSON.parse(xhr.responseText) : null
+      } catch {
+        data = null
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data)
+        return
+      }
+      const err = (data && data.error) || {}
+      const error = new ApiError(
+        xhr.status,
+        err.code || 'http_error',
+        err.message ? mapServerMessage(err.code, err.message) : undefined,
+      )
+      if (xhr.status === 401) handleUnauthorized()
+      reject(error)
+    })
+
+    xhr.addEventListener('error', () => {
+      reject(new ApiError(0, 'network_error', CODE_MESSAGES.network_error))
+    })
+    xhr.addEventListener('abort', () => {
+      reject(new ApiError(0, 'aborted', '上传已取消'))
+    })
+
+    xhr.send(form)
+  })
+}
+
 export const api = {
   // --- auth ---
   challenge: (username) => post('/api/auth/challenge', { username }),
@@ -139,6 +193,30 @@ export const api = {
   createEntry: (path, kind, content = '') => post('/api/files', { path, kind, content }),
   renameEntry: (from, to) => post('/api/files/rename', { from, to }),
   deleteEntry: (path) => post('/api/files/delete', { path }),
+  /**
+   * Upload files into a workspace directory.
+   * @param {string} dir workspace-relative directory ('' for the root)
+   * @param {FileList | File[]} files
+   * @param {{ overwrite?: boolean, onProgress?: (loaded: number, total: number) => void }} [opts]
+   */
+  upload: (dir, files, opts = {}) => {
+    const form = new FormData()
+    for (const file of Array.from(files || [])) form.append('file', file, file.name)
+    const params = new URLSearchParams()
+    if (dir) params.set('dir', dir)
+    if (opts.overwrite) params.set('overwrite', '1')
+    const qs = params.toString()
+    return uploadMultipart(
+      `/api/files/upload${qs ? `?${qs}` : ''}`,
+      form,
+      opts.onProgress,
+    )
+  },
+
+  // --- settings ---
+  settings: () => request('GET', '/api/settings'),
+  adminSettings: () => request('GET', '/api/admin/settings'),
+  updateSettings: (patch) => request('PATCH', '/api/admin/settings', patch),
 
   health: () => request('GET', '/api/health'),
 }

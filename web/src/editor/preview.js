@@ -140,11 +140,48 @@ md.renderer.rules.fence = (tokens, idx) => {
   )
 }
 
+// Uploaded assets live in the workspace, not in the built frontend, so an
+// `![](assets/x.png)` has to be pointed at /api/raw. The current document's
+// directory is the base for relative paths (set with `setBasePath`).
+let basePath = ''
+
+function normalizeRelPath(path) {
+  const out = []
+  for (const raw of String(path).split('/')) {
+    const part = raw.trim()
+    if (!part || part === '.') continue
+    if (part === '..') {
+      out.pop()
+      continue
+    }
+    out.push(part)
+  }
+  return out.join('/')
+}
+
+function resolveAssetUrl(src) {
+  const value = String(src || '').trim()
+  if (!value) return src
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) return src
+  if (value.startsWith('/')) return value
+  const slash = basePath.lastIndexOf('/')
+  const dir = slash >= 0 ? basePath.slice(0, slash) : ''
+  const withoutSuffix = value.replace(/[?#].*$/, '')
+  const joined = normalizeRelPath(dir ? `${dir}/${withoutSuffix}` : withoutSuffix)
+  const suffix = value.slice(withoutSuffix.length)
+  return `/api/raw?path=${encodeURIComponent(joined)}${suffix}`
+}
+
 // Links open outside the SPA but never hand the opener over to the target page.
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A' && node.getAttribute('href')) {
     node.setAttribute('target', '_blank')
     node.setAttribute('rel', 'noopener noreferrer')
+  }
+  if (node.tagName === 'IMG') {
+    const src = node.getAttribute('src')
+    if (src) node.setAttribute('src', resolveAssetUrl(src))
+    node.setAttribute('loading', 'lazy')
   }
 })
 
@@ -223,6 +260,14 @@ export function createPreview(opts) {
   container.addEventListener('scroll', onScrollEvent, { passive: true })
 
   return {
+    /**
+     * Tell the renderer which document is on screen, so relative image paths
+     * resolve inside the workspace. Call it right after opening a file.
+     * @param {string} path workspace-relative path of the open document
+     */
+    setBasePath(path) {
+      basePath = String(path || '')
+    },
     /** Throttled markdown render. */
     render(source) {
       pending = String(source ?? '')

@@ -7,6 +7,17 @@ import { button, el, fmtDateTime, iconButton } from '../util/dom.js'
 
 const ROLE_LABEL = { admin: 'admin', user: 'user' }
 
+/* Upload limit — the server stores bytes (docs/protocol.md §9.1), the UI speaks
+ * MiB, so every value crossing the wire goes through these two helpers. */
+const BYTES_PER_MIB = 1048576
+const LIMIT_MIN_MIB = 1
+const LIMIT_MAX_MIB = 512
+const LIMIT_DEFAULT_BYTES = 10 * BYTES_PER_MIB
+const LIMIT_RANGE_TEXT = `上限必须在 ${LIMIT_MIN_MIB} 到 ${LIMIT_MAX_MIB} MiB 之间`
+
+const mibToBytes = (mib) => Math.round(mib * BYTES_PER_MIB)
+const bytesToMib = (bytes) => Math.round(bytes / BYTES_PER_MIB)
+
 /**
  * @param {HTMLElement} host
  * @param {{ user: any, onBack: () => void, onLogout: () => void }} opts
@@ -17,6 +28,12 @@ export function mountAdmin(host, opts) {
   let users = []
   let loading = false
   let loadError = ''
+
+  // Upload-limit panel state (loads independently of the user table).
+  let savedLimitBytes = LIMIT_DEFAULT_BYTES
+  let limitLoading = false
+  let limitSaving = false
+  let limitLoadError = ''
 
   host.innerHTML = ''
   host.className = 'view view-admin'
@@ -129,6 +146,109 @@ export function mountAdmin(host, opts) {
 
   const panel = el('section', { class: 'admin-panel' }, tableWrap, createBlock)
 
+  // ------------------------------------------------------- upload limit panel
+
+  const limitInput = el('input', {
+    class: 'input mono admin-limit-input',
+    attrs: {
+      type: 'number',
+      id: 'admin-upload-limit',
+      min: String(LIMIT_MIN_MIB),
+      max: String(LIMIT_MAX_MIB),
+      step: '1',
+      inputmode: 'numeric',
+      autocomplete: 'off',
+      'aria-describedby': 'admin-upload-limit-hint admin-upload-limit-error',
+    },
+    on: { input: () => syncLimitForm() },
+  })
+
+  // The form owns submission, so Enter in the field saves exactly like a click.
+  const limitSaveBtn = button('保存上限', 'primary', {}, 'admin-limit-save')
+  limitSaveBtn.type = 'submit'
+
+  const limitNow = el('p', { class: 'admin-limit-now mono' })
+  const limitPreview = el('p', { class: 'admin-limit-preview mono', attrs: { 'aria-live': 'polite' }, hidden: true })
+  const limitError = el('p', {
+    class: 'field-error admin-limit-error',
+    attrs: { id: 'admin-upload-limit-error', role: 'alert' },
+    hidden: true,
+  })
+
+  const limitForm = el(
+    'form',
+    {
+      class: 'admin-limit-form',
+      on: {
+        submit: (event) => {
+          event.preventDefault()
+          submitLimit()
+        },
+      },
+    },
+    el(
+      'div',
+      { class: 'admin-limit-row' },
+      el(
+        'div',
+        { class: 'field admin-limit-field' },
+        el('label', {
+          class: 'field-label',
+          text: '上限（MiB）',
+          attrs: { for: 'admin-upload-limit' },
+        }),
+        limitInput,
+      ),
+      limitSaveBtn,
+    ),
+    el('div', { class: 'admin-limit-meta' }, limitNow, limitPreview, limitError),
+    el('p', {
+      class: 'admin-limit-hint',
+      attrs: { id: 'admin-upload-limit-hint' },
+      text: '填 1 到 512 之间的整数 MiB；1 MiB = 1048576 字节。',
+    }),
+  )
+  limitForm.noValidate = true
+  // Nothing to edit until the current value arrives: skeleton first, no flash.
+  limitForm.hidden = true
+
+  // The placeholder copies the form's shape (label / field + button / meta line),
+  // so the panel does not jump when the real controls arrive.
+  const limitSkeleton = el(
+    'div',
+    { class: 'admin-settings-loading', attrs: { 'aria-hidden': 'true' } },
+    el('span', { class: 'skeleton skel-line is-short' }),
+    el(
+      'div',
+      { class: 'admin-limit-skel-row' },
+      el('span', { class: 'skeleton admin-limit-skel-input' }),
+      el('span', { class: 'skeleton admin-limit-skel-btn' }),
+    ),
+    el('span', { class: 'skeleton skel-line is-mid' }),
+  )
+
+  const limitLoadErrorText = el('p', { class: 'admin-settings-error-text', attrs: { role: 'alert' } })
+  const limitLoadErrorBox = el(
+    'div',
+    { class: 'admin-settings-error', hidden: true },
+    limitLoadErrorText,
+    button('重试加载', 'ghost', () => loadLimit(), 'btn-sm'),
+  )
+
+  const limitPanel = el(
+    'section',
+    { class: 'admin-panel admin-settings', attrs: { 'aria-labelledby': 'admin-upload-limit-title' } },
+    el(
+      'header',
+      { class: 'admin-settings-head' },
+      el('h2', { class: 'admin-settings-title', text: '上传限制', attrs: { id: 'admin-upload-limit-title' } }),
+      el('p', { class: 'admin-settings-sub', text: '单个文件的大小上限，对所有人生效。' }),
+    ),
+    limitSkeleton,
+    limitLoadErrorBox,
+    limitForm,
+  )
+
   const page = el(
     'div',
     { class: 'admin-page' },
@@ -147,6 +267,7 @@ export function mountAdmin(host, opts) {
       refreshBtn,
     ),
     panel,
+    limitPanel,
   )
 
   host.append(el('div', { class: 'admin-shell' }, topbar, page))
@@ -300,6 +421,124 @@ export function mountAdmin(host, opts) {
     }
   }
 
+  // ----------------------------------------------------------- upload limit
+
+  /** @returns {number|null} value of the field when it is a whole number of MiB */
+  function limitDraftMib() {
+    const raw = limitInput.value.trim()
+    if (!/^\d+$/.test(raw)) return null
+    const mib = Number(raw)
+    return Number.isSafeInteger(mib) ? mib : null
+  }
+
+  function limitDraftError() {
+    const mib = limitDraftMib()
+    if (mib === null || mib < LIMIT_MIN_MIB || mib > LIMIT_MAX_MIB) return LIMIT_RANGE_TEXT
+    return ''
+  }
+
+  function renderLimitSaved() {
+    limitNow.textContent = `当前上限 ${bytesToMib(savedLimitBytes)} MiB（${savedLimitBytes} 字节）`
+  }
+
+  /** One source of truth for field hint, error text and button state. */
+  function syncLimitForm() {
+    const error = limitDraftError()
+    const invalid = Boolean(error)
+    const mib = invalid ? null : limitDraftMib()
+
+    limitInput.setAttribute('aria-invalid', invalid ? 'true' : 'false')
+    limitError.hidden = !invalid
+    limitError.textContent = invalid ? error : ''
+
+    // Show the byte figure for a typed value only while it differs from what the
+    // server already stores — otherwise it would just echo the line above.
+    const dirty = !invalid && mibToBytes(mib) !== savedLimitBytes
+    limitPreview.hidden = !dirty
+    limitPreview.textContent = dirty ? `保存后 ${mib} MiB（${mibToBytes(mib)} 字节）` : ''
+
+    limitSaveBtn.disabled = limitLoading || limitSaving || invalid || Boolean(limitLoadError)
+    limitSaveBtn.title = limitLoading
+      ? '正在读取当前上限'
+      : limitSaving
+        ? '正在保存新的上限'
+        : invalid
+          ? error
+          : limitLoadError
+            ? '先重试加载当前上限'
+            : ''
+  }
+
+  function renderLimitState() {
+    limitSkeleton.hidden = !limitLoading
+    limitLoadErrorBox.hidden = limitLoading || !limitLoadError
+    limitForm.hidden = limitLoading || Boolean(limitLoadError)
+    if (limitLoadError) limitLoadErrorText.textContent = limitLoadError
+    if (!limitLoading && !limitLoadError) renderLimitSaved()
+    syncLimitForm()
+  }
+
+  async function loadLimit() {
+    if (limitLoading) return
+    limitLoading = true
+    limitLoadError = ''
+    renderLimitState()
+    try {
+      const res = await api.adminSettings()
+      if (destroyed) return
+      savedLimitBytes = normalizeLimitBytes(res && res.settings && res.settings.max_upload_bytes)
+      limitInput.value = String(bytesToMib(savedLimitBytes))
+    } catch (err) {
+      if (!destroyed) {
+        limitLoadError = err && err.message
+          ? `没能读取当前上传上限：${err.message}`
+          : '没能读取当前上传上限，请检查网络后重试'
+      }
+    } finally {
+      limitLoading = false
+      if (!destroyed) renderLimitState()
+    }
+  }
+
+  function normalizeLimitBytes(value) {
+    const bytes = Number(value)
+    return Number.isFinite(bytes) && bytes > 0 ? Math.round(bytes) : LIMIT_DEFAULT_BYTES
+  }
+
+  async function submitLimit() {
+    if (limitSaving || limitLoading || limitLoadError) return
+    const error = limitDraftError()
+    if (error) {
+      limitError.hidden = false
+      limitError.textContent = error
+      limitInput.setAttribute('aria-invalid', 'true')
+      limitInput.focus()
+      return
+    }
+    const bytes = mibToBytes(limitDraftMib())
+    limitSaving = true
+    limitSaveBtn.textContent = '保存中…'
+    limitSaveBtn.classList.add('is-busy')
+    syncLimitForm()
+    try {
+      const res = await api.updateSettings({ max_upload_bytes: bytes })
+      if (destroyed) return
+      savedLimitBytes = normalizeLimitBytes(res && res.settings && res.settings.max_upload_bytes)
+      limitInput.value = String(bytesToMib(savedLimitBytes))
+      renderLimitSaved()
+      syncLimitForm()
+      toastSuccess(`已把上传上限调整为 ${bytesToMib(savedLimitBytes)} MiB`)
+    } catch (err) {
+      // Surface the server's own Chinese message (bad_limit / forbidden / …).
+      if (!destroyed) toastError(err.message || '没能保存新的上传上限，请重试')
+    } finally {
+      limitSaving = false
+      limitSaveBtn.textContent = '保存上限'
+      limitSaveBtn.classList.remove('is-busy')
+      if (!destroyed) syncLimitForm()
+    }
+  }
+
   // ----------------------------------------------------------------- actions
 
   async function createUser() {
@@ -407,6 +646,7 @@ export function mountAdmin(host, opts) {
   }
 
   loadUsers()
+  loadLimit()
 
   return () => {
     destroyed = true
