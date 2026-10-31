@@ -114,7 +114,7 @@ macro_rules! from_internal {
 from_internal!(
     std::io::Error,
     serde_json::Error,
-    rusqlite::Error,
+    sqlx::Error,
     std::str::Utf8Error,
 );
 

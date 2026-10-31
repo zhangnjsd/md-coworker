@@ -4,7 +4,7 @@ use crate::{admin, auth, collab, files, models::AppState};
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::{
     Json, Router,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -62,7 +62,7 @@ pub fn router(state: AppState) -> Router {
 /// Baseline security headers. No CSP is set on purpose: the frontend needs a Monaco
 /// blob worker and KaTeX / Mermaid inject inline styles, so a strict policy would have
 /// to allow-list each of them. The demo keeps it permissive instead.
-fn security_headers() -> tower::layer::util::Stack<
+type SecurityHeaders = tower::layer::util::Stack<
     SetResponseHeaderLayer<HeaderValue>,
     tower::layer::util::Stack<
         SetResponseHeaderLayer<HeaderValue>,
@@ -74,7 +74,9 @@ fn security_headers() -> tower::layer::util::Stack<
             >,
         >,
     >,
-> {
+>;
+
+fn security_headers() -> SecurityHeaders {
     tower::ServiceBuilder::new()
         .layer(SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
@@ -95,13 +97,22 @@ fn security_headers() -> tower::layer::util::Stack<
         .into_inner()
 }
 
-async fn health() -> Response {
+/// Liveness probe. It also reports whether PostgreSQL answers, so a broken
+/// database is visible to a load balancer instead of only in the logs.
+async fn health(State(state): State<AppState>) -> Response {
+    let db_ok = state.db.ping().await.is_ok();
+    let status = if db_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
     (
-        StatusCode::OK,
+        status,
         Json(json!({
-            "ok": true,
+            "ok": db_ok,
             "name": "md-coworker",
             "version": env!("CARGO_PKG_VERSION"),
+            "database": if db_ok { "ok" } else { "unavailable" },
         })),
     )
         .into_response()

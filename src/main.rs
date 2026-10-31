@@ -28,9 +28,9 @@ async fn main() -> Result<()> {
 
     let cfg = Arc::new(Config::from_args()?);
     let cipher = Arc::new(Cipher::from_master(&cfg.master_key));
-    let db = Arc::new(Db::open(&cfg.db_path())?);
+    let db = Arc::new(Db::connect(&cfg.database_url).await?);
 
-    bootstrap_admin(&db, &cfg)?;
+    bootstrap_admin(&db, &cfg).await?;
 
     let hub = Arc::new(Hub::new(cfg.clone(), cipher.clone()));
     collab::spawn_background_tasks(hub.clone());
@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
             let mut ticker = tokio::time::interval(Duration::from_secs(600));
             loop {
                 ticker.tick().await;
-                if let Err(err) = db.cleanup() {
+                if let Err(err) = db.cleanup().await {
                     tracing::warn!(error = %err, "清理过期会话失败");
                 }
             }
@@ -69,12 +69,9 @@ async fn main() -> Result<()> {
     let local = listener.local_addr()?;
 
     println!();
-    println!("  md-coworker v{} 已启动", env!("CARGO_PKG_VERSION"));
+    println!("  md-coworker v{}", env!("CARGO_PKG_VERSION"));
     println!("  监听地址 : http://{local}");
     println!("  工作区   : {}", cfg.workspace.display());
-    println!("  数据目录 : {}", cfg.data_dir.display());
-    println!("  前端产物 : {}", cfg.static_dir.display());
-    println!("  加密方案 : AES-256-GCM（密钥材料 512bit，HKDF-SHA512 派生）");
     println!();
 
     axum::serve(listener, app)
@@ -83,7 +80,7 @@ async fn main() -> Result<()> {
         .context("HTTP 服务异常退出")?;
 
     hub.flush_all();
-    tracing::info!("已保存全部待落盘文档，进程退出");
+    tracing::info!("已保存全部待保存文档，进程退出");
     Ok(())
 }
 
@@ -98,12 +95,14 @@ fn init_tracing() {
 
 /// First run: create the admin account, print its private key and drop a copy in
 /// `data/bootstrap-admin.key`.
-fn bootstrap_admin(db: &Db, cfg: &Config) -> Result<()> {
-    if db.count_users()? > 0 {
+async fn bootstrap_admin(db: &Db, cfg: &Config) -> Result<()> {
+    if db.count_users().await? > 0 {
         return Ok(());
     }
     let (private_key, public_key) = crypto::generate_keypair();
-    let user = db.create_user("admin", db::Role::Admin, &public_key)?;
+    let user = db
+        .create_user("admin", db::Role::Admin, &public_key)
+        .await?;
 
     let key_file = cfg.data_dir.join("bootstrap-admin.key");
     std::fs::write(&key_file, &private_key)
@@ -119,19 +118,13 @@ fn bootstrap_admin(db: &Db, cfg: &Config) -> Result<()> {
     let banner = format!(
         "\n\
         ============================================================\n\
-         首次启动：已创建管理员账号\n\
          用户名 : {}\n\
          私钥   : {}\n\
-        ------------------------------------------------------------\n\
-         私钥用于登录（Ed25519 挑战签名），服务端不保存私钥。\n\
-         请立即保存到密码管理器，并删除 {} 后妥善保管。\n\
         ============================================================\n",
-        user.username,
-        private_key,
-        key_file.display()
+        user.username, private_key
     );
     println!("{banner}");
-    tracing::warn!(file = %key_file.display(), "管理员私钥已落盘，请尽快迁移保存");
+    tracing::warn!(file = %key_file.display(), "管理员私钥已保存，请尽快迁移保存");
     Ok(())
 }
 
@@ -153,5 +146,5 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-    tracing::info!("收到退出信号，正在收尾…");
+    tracing::info!("Exit...");
 }

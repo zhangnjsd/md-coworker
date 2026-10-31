@@ -1,4 +1,4 @@
-# md-coworker 接口契约（前后端冻结版 v1）
+# md-coworker 接口契约
 
 > 本文件是前端与后端之间**唯一**的接口约定。任何一方改动都必须先改本文件。
 > 所有 HTTP 接口返回 JSON（除静态资源）；所有 HTTP 错误返回
@@ -115,7 +115,7 @@
 | `{"t":"update","path":"notes/a.md","update":"<b64>","user":"<userId>"}` | 他人（或自己其他标签页）的更新；`user` 为来源用户名（服务端已按连接去重，正常不会回显给自己） |
 | `{"t":"awareness","path":"notes/a.md","update":"<b64>","user":"<userId>"}` | 他人 awareness 更新 |
 | `{"t":"peers","path":"notes/a.md","count":3}` | 房间在线人数变化 |
-| `{"t":"saved","path":"notes/a.md","ts":1690000000000}` | 已落盘（前端显示"已保存"） |
+| `{"t":"saved","path":"notes/a.md","ts":1690000000000}` | 已保存（前端显示"已保存"） |
 | `{"t":"presence","users":[PresenceUser...]}` | 全站在线状况快照，每 ~1s 或变化时推送 |
 | `{"t":"error","message":"..."}` | 错误提示（不断开连接） |
 
@@ -141,7 +141,8 @@
 
 ## 7. 其他
 
-- `GET /api/health` → `200 {"ok":true,"version":"0.1.0"}`
+- `GET /api/health` → `200 {"ok":true,"name":"md-coworker","version":"0.1.0","database":"ok"}`
+  （PostgreSQL 不可用时返回 `503` 且 `ok:false`、`database:"unavailable"`）
 - 时间戳统一为毫秒整数（`mtime`, `ts`）或 RFC3339 字符串（`created_at`）。
 - 所有 mutating 请求要求 `Content-Type: application/json`。
 
@@ -155,7 +156,7 @@
   不需要 sync step1/step2 往返。
 - **`presence.selection` 是数字**：当前选区长度（0 表示没有选中内容）。若以后要传完整选区，
   会新增字段 `selection_range:{anchor,head}`，`selection` 保持向后兼容。
-- **`saved` 帧在每次真正写盘后都发**（400ms 防抖落盘、房间清空落盘、进程退出前 flush 均会发），
+- **`saved` 帧在每次真正写盘后都发**（400ms 防抖保存、房间清空保存、进程退出前 flush 均会发），
   前端据此把状态栏切到"已保存"。
 - **同一个连接对同一 `path` 重复 `join` 是幂等的**（不会重复计数，也不会报错，会重新下发 `init`），
   客户端重连后可以直接重发 `join`。
@@ -163,4 +164,4 @@
   二进制中继，不解析内容。
 - 服务端收到 `update` 后**不回显给发送者**（`from_conn` 过滤），避免本地重复应用。
 - 协作中的文件被 `POST /api/files/{rename,delete}` 命中时返回 `409 file_busy`；
-  房间没有成员后会立刻落盘并从内存回收，快照若比磁盘文件旧会被视为过期并丢弃。
+  房间没有成员后会立刻保存并从内存回收，快照若比磁盘文件旧会被视为过期并丢弃。

@@ -1,5 +1,5 @@
-//! Startup configuration: workspace directory, data directory, bind address and the
-//! master key.
+//! Startup configuration: workspace directory, data directory, database URL, bind
+//! address and the master key.
 
 use anyhow::{Context, Result, bail};
 use rand::RngCore;
@@ -10,18 +10,23 @@ use std::{
     time::Duration,
 };
 
+/// Default DSN of the project-local cluster (`just db-up` starts it on port 5433).
+pub const DEFAULT_DATABASE_URL: &str = "postgres://md_coworker@127.0.0.1:5433/md_coworker";
+
 pub const USAGE: &str = "\
-md-coworker —— 实时协作 Markdown 工作区
+md-coworker
 
 用法:
     md-coworker <工作区目录> [选项]
 
 选项:
-    --bind <ADDR>      监听地址，默认 127.0.0.1:3000
-    --data <DIR>       数据目录（SQLite / CRDT 快照 / 主密钥），默认 ./data
-    --static <DIR>     前端构建产物目录，默认 ./web/dist
-    --session-ttl <秒> 会话有效期，默认 604800（7 天）
-    -h, --help         显示本帮助
+    --bind <ADDR>           监听地址，默认 127.0.0.1:3000
+    --database-url <URL>    PostgreSQL 连接串，默认读环境变量 DATABASE_URL，
+                            再回退到 postgres://md_coworker@127.0.0.1:5433/md_coworker
+    --data <DIR>            数据目录（CRDT 快照 / 主密钥），默认 ./data
+    --static <DIR>          前端构建产物目录，默认 ./web/dist
+    --session-ttl <秒>      会话有效期，默认 604800（7 天）
+    -h, --help              显示本帮助
 ";
 
 #[derive(Debug, Clone)]
@@ -30,6 +35,8 @@ pub struct Config {
     pub workspace: PathBuf,
     /// Data directory.
     pub data_dir: PathBuf,
+    /// PostgreSQL connection string.
+    pub database_url: String,
     /// Frontend build output directory.
     pub static_dir: PathBuf,
     /// Bind address.
@@ -46,6 +53,7 @@ impl Config {
         let mut bind: Option<String> = None;
         let mut data_dir: Option<String> = None;
         let mut static_dir: Option<String> = None;
+        let mut database_url: Option<String> = None;
         let mut session_ttl: Option<u64> = None;
 
         let mut args = std::env::args().skip(1);
@@ -58,6 +66,9 @@ impl Config {
                 "--bind" => bind = Some(args.next().context("--bind 缺少参数")?),
                 "--data" => data_dir = Some(args.next().context("--data 缺少参数")?),
                 "--static" => static_dir = Some(args.next().context("--static 缺少参数")?),
+                "--database-url" => {
+                    database_url = Some(args.next().context("--database-url 缺少参数")?)
+                }
                 "--session-ttl" => {
                     let value = args.next().context("--session-ttl 缺少参数")?;
                     session_ttl = Some(value.parse().context("--session-ttl 需要整数秒")?);
@@ -91,20 +102,21 @@ impl Config {
             .parse()
             .context("监听地址格式错误，例如 127.0.0.1:3000")?;
 
+        let database_url = database_url
+            .or_else(|| std::env::var("DATABASE_URL").ok())
+            .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string());
+
         let master_key = load_or_create_master_key(&data_dir)?;
 
         Ok(Self {
             workspace,
             data_dir,
+            database_url,
             static_dir,
             bind,
             master_key,
             session_ttl: Duration::from_secs(session_ttl.unwrap_or(7 * 24 * 3600)),
         })
-    }
-
-    pub fn db_path(&self) -> PathBuf {
-        self.data_dir.join("md-coworker.sqlite3")
     }
 
     pub fn snapshots_dir(&self) -> PathBuf {

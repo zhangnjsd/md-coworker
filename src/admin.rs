@@ -20,7 +20,7 @@ pub async fn list_users(
     State(state): State<AppState>,
     _admin: AdminUser,
 ) -> ApiResult<Json<Value>> {
-    let users = state.db.list_users()?;
+    let users = state.db.list_users().await?;
     let online = state.hub.online_user_ids();
     let dtos: Vec<UserDto> = users
         .iter()
@@ -52,7 +52,7 @@ pub async fn create_user(
         Some(value) => parse_role(value)?,
     };
 
-    if state.db.find_user_by_username(&username)?.is_some() {
+    if state.db.find_user_by_username(&username).await?.is_some() {
         return Err(AppError::conflict("user_exists", "用户名已被占用"));
     }
 
@@ -60,6 +60,7 @@ pub async fn create_user(
     let user = state
         .db
         .create_user(&username, role, &public_key)
+        .await
         .context("创建用户失败")?;
     tracing::info!(user = %user.username, role = user.role.as_str(), "管理员创建用户");
 
@@ -78,19 +79,20 @@ pub async fn reset_keypair(
 ) -> ApiResult<Json<Value>> {
     let user = state
         .db
-        .get_user(&user_id)?
+        .get_user(&user_id)
+        .await?
         .ok_or_else(|| AppError::not_found("unknown_user", "用户不存在"))?;
 
     let (private_key, public_key) = crypto::generate_keypair();
-    state.db.set_public_key(&user.id, &public_key)?;
+    state.db.set_public_key(&user.id, &public_key).await?;
     // Drop that user's existing sessions (resetting your own key keeps this session).
     if admin.0.user.id != user.id {
-        state.db.delete_user_sessions(&user.id)?;
+        state.db.delete_user_sessions(&user.id).await?;
     }
     tracing::info!(actor = %admin.0.user.username, target = %user.username, "管理员重置密钥对");
 
     Ok(Json(json!({
-        "user": UserDto::from(&state.db.get_user(&user.id)?.context("用户消失")?),
+        "user": UserDto::from(&state.db.get_user(&user.id).await?.context("用户消失")?),
         "private_key": private_key,
         "public_key": public_key,
     })))
@@ -112,26 +114,27 @@ pub async fn patch_user(
 ) -> ApiResult<Json<Value>> {
     let user = state
         .db
-        .get_user(&user_id)?
+        .get_user(&user_id)
+        .await?
         .ok_or_else(|| AppError::not_found("unknown_user", "用户不存在"))?;
 
     if let Some(role) = req.role.as_deref() {
         let role = parse_role(role)?;
-        if user.role.is_admin() && !role.is_admin() && admin_count(&state)? <= 1 {
+        if user.role.is_admin() && !role.is_admin() && admin_count(&state).await? <= 1 {
             return Err(AppError::bad_request(
                 "last_admin",
                 "系统至少需要保留一个管理员",
             ));
         }
-        state.db.set_role(&user.id, role)?;
+        state.db.set_role(&user.id, role).await?;
     }
 
     if let Some(false) = req.twofa_enabled {
-        state.db.set_totp(&user.id, None, false)?;
+        state.db.set_totp(&user.id, None, false).await?;
         tracing::info!(actor = %admin.0.user.username, target = %user.username, "管理员强制重置 2FA");
     }
 
-    let updated = state.db.get_user(&user.id)?.context("用户消失")?;
+    let updated = state.db.get_user(&user.id).await?.context("用户消失")?;
     Ok(Json(json!({ "user": UserDto::from(&updated) })))
 }
 
@@ -145,20 +148,21 @@ pub async fn delete_user(
     }
     let user = state
         .db
-        .get_user(&user_id)?
+        .get_user(&user_id)
+        .await?
         .ok_or_else(|| AppError::not_found("unknown_user", "用户不存在"))?;
-    if user.role.is_admin() && admin_count(&state)? <= 1 {
+    if user.role.is_admin() && admin_count(&state).await? <= 1 {
         return Err(AppError::bad_request(
             "last_admin",
             "系统至少需要保留一个管理员",
         ));
     }
-    state.db.delete_user(&user.id)?;
+    state.db.delete_user(&user.id).await?;
     tracing::info!(actor = %admin.0.user.username, target = %user.username, "删除用户");
     Ok(Json(json!({ "ok": true })))
 }
 
-fn admin_count(state: &AppState) -> ApiResult<i64> {
-    let users = state.db.list_users()?;
+async fn admin_count(state: &AppState) -> ApiResult<i64> {
+    let users = state.db.list_users().await?;
     Ok(users.iter().filter(|u| u.role.is_admin()).count() as i64)
 }

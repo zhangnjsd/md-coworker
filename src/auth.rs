@@ -45,6 +45,7 @@ impl FromRequestParts<AppState> for AuthUser {
         let user = state
             .db
             .session_user(&token)
+            .await
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::unauthorized("unauthorized", "会话不存在或已过期"))?;
         Ok(Self { user, token })
@@ -95,10 +96,11 @@ fn clear_cookie() -> HeaderValue {
     .expect("清理 Cookie 一定合法")
 }
 
-fn login_response(state: &AppState, user: &UserRow) -> ApiResult<Response> {
+async fn login_response(state: &AppState, user: &UserRow) -> ApiResult<Response> {
     let token = state
         .db
-        .create_session(&user.id, state.cfg.session_ttl.as_secs() as i64)?;
+        .create_session(&user.id, state.cfg.session_ttl.as_secs() as i64)
+        .await?;
     let body = json!({ "status": "ok", "user": UserDto::from(user) });
     let mut response = (StatusCode::OK, Json(body)).into_response();
     response.headers_mut().insert(
@@ -125,13 +127,15 @@ pub async fn challenge(
     }
     let user = state
         .db
-        .find_user_by_username(username)?
+        .find_user_by_username(username)
+        .await?
         .ok_or_else(|| AppError::not_found("unknown_user", "用户不存在"))?;
 
     let nonce = crypto::random_bytes(32);
     let challenge_id = state
         .db
-        .create_challenge(&user.id, &nonce, CHALLENGE_TTL_SECS)?;
+        .create_challenge(&user.id, &nonce, CHALLENGE_TTL_SECS)
+        .await?;
 
     Ok(Json(json!({
         "challenge_id": challenge_id,
@@ -153,12 +157,14 @@ pub async fn login(
 ) -> ApiResult<Response> {
     let challenge = state
         .db
-        .consume_challenge(&req.challenge_id)?
+        .consume_challenge(&req.challenge_id)
+        .await?
         .ok_or_else(|| AppError::unauthorized("challenge_expired", "登录挑战已过期，请重试"))?;
 
     let user = state
         .db
-        .get_user(&challenge.user_id)?
+        .get_user(&challenge.user_id)
+        .await?
         .ok_or_else(|| AppError::unauthorized("unknown_user", "用户不存在"))?;
 
     if !crypto::verify_signature(&user.public_key, &challenge.nonce, &req.signature) {
@@ -169,11 +175,14 @@ pub async fn login(
     }
 
     if user.totp_enabled {
-        let ticket = state.db.create_mfa_ticket(&user.id, MFA_TICKET_TTL_SECS)?;
+        let ticket = state
+            .db
+            .create_mfa_ticket(&user.id, MFA_TICKET_TTL_SECS)
+            .await?;
         return Ok(Json(json!({ "status": "mfa_required", "ticket": ticket })).into_response());
     }
 
-    login_response(&state, &user)
+    login_response(&state, &user).await
 }
 
 #[derive(Deserialize)]
@@ -188,19 +197,20 @@ pub async fn verify_mfa(
 ) -> ApiResult<Response> {
     let user = state
         .db
-        .mfa_ticket_user(&req.ticket)?
+        .mfa_ticket_user(&req.ticket)
+        .await?
         .ok_or_else(|| AppError::unauthorized("mfa_expired", "二次验证会话已过期，请重新登录"))?;
 
     let secret = totp_secret(&state.cipher, &user)?;
     if !crypto::verify_totp(&secret, &req.code) {
         return Err(AppError::unauthorized("bad_totp", "动态验证码不正确"));
     }
-    state.db.consume_mfa_ticket(&req.ticket)?;
-    login_response(&state, &user)
+    state.db.consume_mfa_ticket(&req.ticket).await?;
+    login_response(&state, &user).await
 }
 
 pub async fn logout(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Response> {
-    state.db.delete_session(&auth.token)?;
+    state.db.delete_session(&auth.token).await?;
     let mut response = Json(json!({ "ok": true })).into_response();
     response
         .headers_mut()
@@ -219,7 +229,7 @@ pub async fn regenerate_own_keypair(
     auth: AuthUser,
 ) -> ApiResult<Json<Value>> {
     let (private_key, public_key) = crypto::generate_keypair();
-    state.db.set_public_key(&auth.user.id, &public_key)?;
+    state.db.set_public_key(&auth.user.id, &public_key).await?;
     tracing::info!(user = %auth.user.username, "用户自助重置密钥对");
     Ok(Json(json!({
         "private_key": private_key,
@@ -240,7 +250,10 @@ pub async fn totp_setup(State(state): State<AppState>, auth: AuthUser) -> ApiRes
         .cipher
         .seal(totp_aad(&auth.user.id).as_bytes(), &secret_raw)
         .context("加密 TOTP 种子失败")?;
-    state.db.set_totp(&auth.user.id, Some(sealed), false)?;
+    state
+        .db
+        .set_totp(&auth.user.id, Some(sealed), false)
+        .await?;
 
     Ok(Json(json!({
         "secret": secret_b32,
@@ -267,8 +280,13 @@ pub async fn totp_enable(
     }
     state
         .db
-        .set_totp(&auth.user.id, auth.user.totp_secret_enc.clone(), true)?;
-    let user = state.db.get_user(&auth.user.id)?.context("用户消失")?;
+        .set_totp(&auth.user.id, auth.user.totp_secret_enc.clone(), true)
+        .await?;
+    let user = state
+        .db
+        .get_user(&auth.user.id)
+        .await?
+        .context("用户消失")?;
     tracing::info!(user = %user.username, "启用 2FA");
     Ok(Json(json!({ "user": UserDto::from(&user) })))
 }
@@ -285,8 +303,12 @@ pub async fn totp_disable(
     if !crypto::verify_totp(&secret, &req.code) {
         return Err(AppError::bad_request("bad_totp", "动态验证码不正确"));
     }
-    state.db.set_totp(&auth.user.id, None, false)?;
-    let user = state.db.get_user(&auth.user.id)?.context("用户消失")?;
+    state.db.set_totp(&auth.user.id, None, false).await?;
+    let user = state
+        .db
+        .get_user(&auth.user.id)
+        .await?
+        .context("用户消失")?;
     tracing::info!(user = %user.username, "关闭 2FA");
     Ok(Json(json!({ "user": UserDto::from(&user) })))
 }
