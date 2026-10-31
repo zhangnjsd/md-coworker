@@ -20,10 +20,13 @@ Axum (0.8) ── yrs 文档房间 ── 400ms 防抖落盘 ──▶ 工作区
 ## 快速开始
 
 ```bash
-# 1. 构建前端（产物进入 web/dist，由后端静态托管）
-cd web && npm install && npm run build && cd ..
+# 用 just（推荐）
+just install     # 前端 + 测试脚本依赖
+just web         # 构建前端产物到 web/dist
+just run         # release 构建并启动；第一个参数就是工作区目录
 
-# 2. 构建并启动后端；第一个参数就是工作区目录
+# 或者直接手敲
+cd web && npm install && npm run build && cd ..
 cargo run --release -- ./demo-workspace --bind 127.0.0.1:3000
 ```
 
@@ -123,12 +126,31 @@ docs/protocol.md 前后端协议契约
 ## 测试
 
 ```bash
-cargo test                 # 单元测试：HKDF / AES / Ed25519 / base32 / TOTP
-node tools/smoke.mjs       # 端到端：登录、文件、双客户端协作、presence、2FA、密钥轮换
-node tools/browser.mjs     # 真浏览器（Chromium）双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
+just test        # 单元测试：HKDF / AES / Ed25519 / base32 / TOTP
+just smoke       # 端到端接口 + WebSocket：登录、文件、双客户端协作、presence、2FA、密钥轮换
+just browser     # 真浏览器（Chromium）双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
 ```
 
-`tools/` 需要先 `cd tools && npm install`（ws / yjs / tweetnacl / puppeteer-core）。
+`smoke` / `browser` 需要服务已在 `BIND`（默认 `127.0.0.1:3000`）上运行，
+并先 `just install` 装好 `web/` 与 `tools/` 的 npm 依赖（ws / yjs / tweetnacl / puppeteer-core）。
+
+## 常用命令（Just）
+
+本项目用 [just](https://github.com/casey/just) 而不是 Make 管理任务，`just` 或 `just --list` 可看全部：
+
+```bash
+just install     # 安装 web/ 与 tools/ 的 npm 依赖
+just web         # 构建前端到 web/dist
+just release     # release 构建后端
+just run         # release 构建并启动（WORKSPACE=... BIND=... just run）
+just dev         # debug 构建并启动
+just test        # cargo test
+just smoke       # 接口冒烟测试
+just browser     # 真浏览器测试
+just shots       # 重新生成 docs/screenshots
+just fmt         # cargo fmt + prettier
+just clean       # cargo clean + 删除 web/dist 与 data
+```
 
 ## 前端体积取舍
 
