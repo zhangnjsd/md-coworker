@@ -83,7 +83,7 @@ pub struct Node {
     pub children: Option<Vec<Node>>,
 }
 
-pub fn build_tree(root: &Path, dir: &Path, prefix: &str) -> Result<Vec<Node>, AppError> {
+pub fn build_tree(_root: &Path, dir: &Path, prefix: &str) -> Result<Vec<Node>, AppError> {
     let mut entries: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
     let read = std::fs::read_dir(dir)
         .with_context(|| format!("读取目录失败: {}", dir.display()))
@@ -121,7 +121,7 @@ pub fn build_tree(root: &Path, dir: &Path, prefix: &str) -> Result<Vec<Node>, Ap
             format!("{prefix}/{name}")
         };
         if meta.is_dir() {
-            let children = build_tree(root, &path, &rel).unwrap_or_default();
+            let children = build_tree(_root, &path, &rel).unwrap_or_default();
             nodes.push(Node {
                 name,
                 path: rel,

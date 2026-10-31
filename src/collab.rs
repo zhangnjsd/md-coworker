@@ -286,7 +286,7 @@ impl Hub {
         });
         if count == 0 {
             if let Err(err) = self.flush_room(room) {
-                tracing::warn!(path = %room.path, error = %err, "离开房间时落盘失败");
+                tracing::warn!(path = %room.path, error = %err, "离开房间时保存失败");
             }
             self.recycle_room(room);
         }
@@ -376,7 +376,7 @@ impl Hub {
         for room in rooms {
             if room.dirty.load(Ordering::Relaxed) {
                 if let Err(err) = self.flush_room(&room) {
-                    tracing::warn!(path = %room.path, error = %err, "定时落盘失败");
+                    tracing::warn!(path = %room.path, error = %err, "定时保存失败");
                 }
             }
         }
@@ -392,7 +392,7 @@ impl Hub {
             .collect();
         for room in rooms {
             if let Err(err) = self.flush_room(&room) {
-                tracing::warn!(path = %room.path, error = %err, "退出前落盘失败");
+                tracing::warn!(path = %room.path, error = %err, "退出前保存失败");
             }
         }
     }
