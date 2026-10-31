@@ -13,18 +13,21 @@ pg_user := env("PG_USER", "md_coworker")
 pg_db   := env("PG_DB", "md_coworker")
 db_url  := env("DATABASE_URL", "postgres://md_coworker@127.0.0.1:5433/md_coworker")
 
+# bun often lives in ~/.bun/bin without being on PATH.
+bun := `command -v bun || echo "$HOME/.bun/bin/bun"`
+
 # Default: list every recipe
 default:
     @just --list
 
 # Install dependencies for the frontend and the test scripts
 install:
-    cd web && bun install
-    cd tools && bun install
+    cd web && {{bun}} install
+    cd tools && {{bun}} install
 
 # Build the frontend into web/dist
 web:
-    cd web && bun run build
+    cd web && {{bun}} run build
 
 # Build the backend (debug)
 build:
