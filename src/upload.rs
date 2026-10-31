@@ -95,18 +95,75 @@ fn mime_for(path: &str) -> Option<&'static str> {
     Some(mime)
 }
 
+/// Extensions the editor opens as text even though nobody assigns them a MIME type.
+///
+/// `mime_for` stays deliberately short, so the "is this text?" decision lives here where
+/// the upload list needs it, instead of piggy-backing on `files::language_for`.
+fn is_text_ext(path: &str) -> bool {
+    let ext = Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "txt"
+            | "log"
+            | "md"
+            | "markdown"
+            | "mdx"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "jsonc"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "rs"
+            | "py"
+            | "js"
+            | "mjs"
+            | "cjs"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "c"
+            | "h"
+            | "cc"
+            | "cpp"
+            | "hpp"
+            | "go"
+            | "java"
+            | "kt"
+            | "rb"
+            | "php"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "sql"
+            | "html"
+            | "htm"
+            | "css"
+            | "scss"
+            | "xml"
+    )
+}
+
 /// What the upload list calls this file, so the UI can pick an icon.
 fn kind_for(path: &str, mime: Option<&str>) -> &'static str {
     match mime {
         Some(mime) if mime.starts_with("image/") => "image",
         Some(mime) if mime.starts_with("text/") || mime.starts_with("application/json") => "text",
-        // Source code has no MIME of its own; treat any language the editor
-        // recognises as text, and everything else as an opaque attachment.
+        // Source code and config files have no MIME type of their own; fall back to the
+        // extension rather than to a language table.
         _ => {
-            if crate::files::language_for(path) == "text" {
-                "other"
-            } else {
+            if is_text_ext(path) {
                 "text"
+            } else {
+                "other"
             }
         }
     }
@@ -301,8 +358,45 @@ pub async fn upload(
         .into_response())
 }
 
+/// Removes an upload temp file unless it was explicitly kept.
+///
+/// The upload body is streamed: when the client disconnects mid-request the handler
+/// future is dropped, so cleanup cannot live on the error branches alone — this guard
+/// runs on `Drop` instead, covering cancellation, errors and panics alike.
+struct TempGuard {
+    path: Option<PathBuf>,
+}
+
+impl TempGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    /// Keep the file (it was renamed into place).
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "清理上传临时文件失败"
+                ),
+            }
+        }
+    }
+}
+
 /// Stream one part into `<target>.mc-upload-<uuid>` and only rename it into place
-/// once the whole part arrived; on any failure the temporary file is removed.
+/// once the whole part arrived; on any failure — including a client that disappears
+/// halfway through — the temporary file is removed.
 async fn stream_to_temp(
     field: &mut axum::extract::multipart::Field<'_>,
     target: &Path,
@@ -311,6 +405,7 @@ async fn stream_to_temp(
 ) -> Result<i64, AppError> {
     let dir = target.parent().unwrap_or(Path::new("."));
     let temp: PathBuf = dir.join(format!(".mc-upload-{}", uuid::Uuid::new_v4()));
+    let mut guard = TempGuard::new(temp.clone());
 
     let mut file = tokio::fs::File::create(&temp)
         .await
@@ -323,7 +418,6 @@ async fn stream_to_temp(
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
             Err(err) => {
-                let _ = tokio::fs::remove_file(&temp).await;
                 return Err(AppError::bad_request(
                     "bad_multipart",
                     format!("上传数据读取失败: {err}"),
@@ -332,7 +426,6 @@ async fn stream_to_temp(
         };
         written += chunk.len() as i64;
         if written > limit {
-            let _ = tokio::fs::remove_file(&temp).await;
             return Err(AppError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "too_large",
@@ -343,7 +436,6 @@ async fn stream_to_temp(
             ));
         }
         if let Err(err) = file.write_all(&chunk).await {
-            let _ = tokio::fs::remove_file(&temp).await;
             return Err(AppError::internal(
                 anyhow::Error::new(err).context("写入上传文件失败"),
             ));
@@ -351,7 +443,6 @@ async fn stream_to_temp(
     }
 
     if let Err(err) = file.flush().await {
-        let _ = tokio::fs::remove_file(&temp).await;
         return Err(AppError::internal(
             anyhow::Error::new(err).context("刷新上传文件失败"),
         ));
@@ -359,11 +450,11 @@ async fn stream_to_temp(
     drop(file);
 
     if let Err(err) = tokio::fs::rename(&temp, target).await {
-        let _ = tokio::fs::remove_file(&temp).await;
         return Err(AppError::internal(
             anyhow::Error::new(err).context(format!("重命名上传文件失败: {rel}")),
         ));
     }
+    guard.disarm();
     Ok(written)
 }
 
@@ -384,6 +475,12 @@ pub async fn raw(
         .map_err(|_| AppError::not_found("file_not_found", format!("文件不存在: {rel}")))?;
     if !meta.is_file() {
         return Err(AppError::bad_request("not_a_file", "目标不是文件"));
+    }
+    if meta.len() > crate::files::MAX_READ_BYTES {
+        return Err(AppError::too_large(
+            "too_large",
+            "文件超过 100 MiB，无法在浏览器中读取",
+        ));
     }
 
     let bytes = tokio::fs::read(&abs)
@@ -437,4 +534,34 @@ pub async fn raw(
     builder
         .body(Body::from(bytes))
         .map_err(|err| AppError::internal(anyhow::Error::new(err).context("构造原始文件响应失败")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_for_classifies_text_image_and_other() {
+        for path in [
+            "notes/a.txt",
+            "run.log",
+            "data.csv",
+            "conf.json",
+            "ci.yaml",
+            "Cargo.toml",
+            "src/main.rs",
+            "tools/x.py",
+            "web/src/app.js",
+            "README.md",
+        ] {
+            assert_eq!(kind_for(path, mime_for(path)), "text", "{path} 应是 text");
+        }
+        for path in ["p.png", "photo.jpeg", "logo.svg"] {
+            assert_eq!(kind_for(path, mime_for(path)), "image", "{path} 应是 image");
+        }
+        for path in ["a.zip", "movie.mp4", "blob.dat", "noext"] {
+            assert_eq!(kind_for(path, mime_for(path)), "other", "{path} 应是 other");
+        }
+        assert_eq!(kind_for("noext", None), "other");
+    }
 }

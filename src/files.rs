@@ -1,8 +1,9 @@
 //! Workspace filesystem: safe path resolution, directory tree and CRUD.
 //!
 //! Every path crossing the API is a POSIX path relative to the workspace root and must
-//! consist of "normal" components only: absolute paths, `..` and empty segments are
-//! rejected, so nothing can escape the workspace.
+//! consist of "normal" components only: absolute paths, `..`, empty segments and hidden
+//! (`.`-prefixed) components are rejected. After joining, the real location of the path
+//! (symbolic links resolved) is checked against the workspace, so links cannot escape it.
 
 use crate::{
     auth::AuthUser,
@@ -17,15 +18,27 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     path::{Component, Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
 const SKIP_DIRS: [&str; 5] = [".git", "node_modules", "target", ".idea", ".vscode"];
 
+/// Largest file `/api/file` and `/api/raw` will hand to a browser, in bytes.
+pub const MAX_READ_BYTES: u64 = 100 * 1024 * 1024;
+
+/// How many directory levels `build_tree` descends (protects against link loops).
+const MAX_TREE_DEPTH: usize = 12;
+/// How many entries `build_tree` collects before it stops walking.
+const MAX_TREE_ENTRIES: usize = 5000;
+
 // ---------------------------------------------------------------- paths
 
 /// Resolve a relative path into an absolute path inside the workspace.
+///
+/// Rejects hidden paths (any component starting with `.`), then verifies that the joined
+/// path — with symbolic links resolved — is still inside the workspace.
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
     let rel = rel.trim().trim_start_matches('/');
     if rel.is_empty() {
@@ -40,7 +53,14 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
     }
     for component in candidate.components() {
         match component {
-            Component::Normal(_) => {}
+            Component::Normal(name) => {
+                if name.to_string_lossy().starts_with('.') {
+                    return Err(AppError::bad_request(
+                        "bad_path",
+                        format!("隐藏路径不可访问（路径组件不能以 . 开头）: {rel}"),
+                    ));
+                }
+            }
             _ => {
                 return Err(AppError::bad_request(
                     "bad_path",
@@ -49,7 +69,58 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
             }
         }
     }
-    Ok(root.join(candidate))
+    let joined = root.join(candidate);
+    ensure_within(root, &joined, rel)?;
+    Ok(joined)
+}
+
+/// Reject a joined path whose real location leaves the workspace.
+///
+/// A target that does not exist yet (a file or directory about to be created, the
+/// destination of a rename) is resolved through its nearest existing ancestor with the
+/// missing tail re-appended, so creation keeps working while every existing symlink is
+/// still followed.
+fn ensure_within(root: &Path, joined: &Path, rel: &str) -> Result<(), AppError> {
+    let root_real = canonicalize_lenient(root)
+        .map_err(|err| AppError::internal(anyhow::Error::new(err).context("工作区目录不可访问")))?;
+    let real = canonicalize_lenient(joined).map_err(|err| {
+        AppError::internal(anyhow::Error::new(err).context("解析文件真实路径失败"))
+    })?;
+    if real.starts_with(&root_real) {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(
+            "bad_path",
+            format!("路径超出了工作区范围（符号链接不可逃逸）: {rel}"),
+        ))
+    }
+}
+
+/// Best-effort `canonicalize`: when `path` itself does not exist, canonicalize its
+/// nearest existing ancestor and re-append the missing tail.
+///
+/// This is what keeps "resolve a path that is about to be created" possible without
+/// giving up symlink resolution for the part of the path that does exist.
+pub fn canonicalize_lenient(path: &Path) -> std::io::Result<PathBuf> {
+    if let Ok(real) = path.canonicalize() {
+        return Ok(real);
+    }
+    let mut tail: Vec<OsString> = Vec::new();
+    let mut cursor = path;
+    while let Some(parent) = cursor.parent() {
+        let Some(name) = cursor.file_name() else {
+            break;
+        };
+        tail.push(name.to_os_string());
+        if let Ok(mut real) = parent.canonicalize() {
+            for part in tail.iter().rev() {
+                real.push(part);
+            }
+            return Ok(real);
+        }
+        cursor = parent;
+    }
+    path.canonicalize()
 }
 
 /// Normalize into a POSIX relative path (strips leading `./` and `/`).
@@ -83,22 +154,71 @@ pub struct Node {
     pub children: Option<Vec<Node>>,
 }
 
-pub fn build_tree(_root: &Path, dir: &Path, prefix: &str) -> Result<Vec<Node>, AppError> {
-    let mut entries: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
+/// How much of the tree one `build_tree` call is still allowed to collect.
+#[derive(Default)]
+struct TreeBudget {
+    entries: usize,
+    truncated: bool,
+}
+
+impl TreeBudget {
+    /// Mark the tree as truncated, warning once about the limit that was hit.
+    fn truncate(&mut self, dir: &Path, limit: &str) {
+        if !self.truncated {
+            tracing::warn!(
+                dir = %dir.display(),
+                entries = self.entries,
+                limit,
+                "文件树遍历超过上限，已截断"
+            );
+        }
+        self.truncated = true;
+    }
+}
+
+pub fn build_tree(dir: &Path, prefix: &str) -> Result<Vec<Node>, AppError> {
+    let mut budget = TreeBudget::default();
+    walk_tree(dir, prefix, 0, &mut budget)
+}
+
+fn walk_tree(
+    dir: &Path,
+    prefix: &str,
+    depth: usize,
+    budget: &mut TreeBudget,
+) -> Result<Vec<Node>, AppError> {
+    if depth >= MAX_TREE_DEPTH {
+        budget.truncate(dir, "depth=12");
+        return Ok(Vec::new());
+    }
+
     let read = std::fs::read_dir(dir)
         .with_context(|| format!("读取目录失败: {}", dir.display()))
         .map_err(AppError::from)?;
+
+    let mut entries: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
     for entry in read {
+        if budget.entries >= MAX_TREE_ENTRIES {
+            budget.truncate(dir, "entries=5000");
+            break;
+        }
         let entry = entry.context("读取目录项失败").map_err(AppError::from)?;
         let name = entry.file_name().to_string_lossy().to_string();
         if is_hidden(&name) {
             continue;
         }
-        let meta = match entry.metadata() {
+        let path = entry.path();
+        // `symlink_metadata` does not follow links: anything that is a link is skipped
+        // instead of being traversed out of the workspace (or into an endless loop).
+        let meta = match std::fs::symlink_metadata(&path) {
             Ok(meta) => meta,
             Err(_) => continue,
         };
-        entries.push((entry.path(), meta));
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        budget.entries += 1;
+        entries.push((path, meta));
     }
 
     entries.sort_by(|a, b| {
@@ -121,7 +241,7 @@ pub fn build_tree(_root: &Path, dir: &Path, prefix: &str) -> Result<Vec<Node>, A
             format!("{prefix}/{name}")
         };
         if meta.is_dir() {
-            let children = build_tree(_root, &path, &rel).unwrap_or_default();
+            let children = walk_tree(&path, &rel, depth + 1, budget).unwrap_or_default();
             nodes.push(Node {
                 name,
                 path: rel,
@@ -146,6 +266,9 @@ pub fn build_tree(_root: &Path, dir: &Path, prefix: &str) -> Result<Vec<Node>, A
 
 // ---------------------------------------------------------------- language detection
 
+/// Editor language for a workspace path. Unknown / missing extensions fall back to
+/// `plaintext` (not `text`) so callers can use this honestly as "is this a language I
+/// know?" — see `upload::kind_for`.
 pub fn language_for(path: &str) -> &'static str {
     let ext = Path::new(path)
         .extension()
@@ -175,8 +298,8 @@ pub fn language_for(path: &str) -> &'static str {
         "sql" => "sql",
         "xml" => "xml",
         "dockerfile" => "dockerfile",
-        "txt" | "log" => "text",
-        _ => "text",
+        "txt" | "log" => "plaintext",
+        _ => "plaintext",
     }
 }
 
@@ -189,11 +312,8 @@ pub struct FileQuery {
 
 pub async fn list_files(State(state): State<AppState>, _auth: AuthUser) -> ApiResult<Json<Value>> {
     let root = state.cfg.workspace.clone();
-    let tree = build_tree(&root, &root, "")?;
-    Ok(Json(json!({
-        "root": root.display().to_string(),
-        "tree": tree,
-    })))
+    let tree = build_tree(&root, "")?;
+    Ok(Json(json!({ "tree": tree })))
 }
 
 pub async fn read_file(
@@ -211,6 +331,12 @@ pub async fn read_file(
         .map_err(|_| AppError::not_found("file_not_found", format!("文件不存在: {rel}")))?;
     if !meta.is_file() {
         return Err(AppError::bad_request("not_a_file", "目标不是文件"));
+    }
+    if meta.len() > MAX_READ_BYTES {
+        return Err(AppError::too_large(
+            "too_large",
+            "文件超过 100 MiB，无法在浏览器中读取",
+        ));
     }
     let raw = std::fs::read(&abs)
         .with_context(|| format!("读取文件失败: {rel}"))
@@ -297,7 +423,12 @@ pub async fn rename_entry(
     if from.is_empty() || to.is_empty() {
         return Err(AppError::bad_request("bad_path", "from/to 不能为空"));
     }
-    if state.hub.is_active(&from) {
+    // Take the write locks first: for as long as they are held, `join`, `ensure_room`
+    // and uploads refuse these paths with 409, which closes the TOCTOU window between
+    // the "is anybody editing?" check and the rename below.
+    let _from_lock = state.hub.lock_path(&from);
+    let _to_lock = state.hub.lock_path(&to);
+    if state.hub.is_active(&from) || state.hub.is_active(&to) {
         return Err(AppError::conflict(
             "file_busy",
             "该文件正在被协作编辑，请等待所有人离开后再重命名",
@@ -337,6 +468,9 @@ pub async fn delete_entry(
     if rel.is_empty() {
         return Err(AppError::bad_request("bad_path", "缺少 path"));
     }
+    // Hold the write lock across the "nobody is editing?" check and the removal, so a
+    // connection cannot join the room between the two (TOCTOU).
+    let _lock = state.hub.lock_path(&rel);
     if state.hub.is_active(&rel) {
         return Err(AppError::conflict(
             "file_busy",
@@ -365,4 +499,76 @@ pub fn read_text_lossy(abs: &Path) -> Result<String> {
     let raw = std::fs::read(abs).with_context(|| format!("读取文件失败: {}", abs.display()))?;
     let text = String::from_utf8(raw).map_err(|_| anyhow!("文件不是合法的 UTF-8 文本"))?;
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_workspace(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mc-files-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("创建测试工作区");
+        dir
+    }
+
+    fn error_code(err: &AppError) -> String {
+        let debug = format!("{err:?}");
+        debug
+            .split("code: \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn resolve_rejects_hidden_components() {
+        let root = temp_workspace("hidden");
+        // Note: `data/master.key` has no dot-prefixed component; the "data lives outside
+        // the workspace" rule is what protects it.
+        for rel in [".env", ".git/config", "notes/.secret", "a/.hidden/b.txt"] {
+            let err = resolve(&root, rel).expect_err("隐藏路径应被拒绝");
+            assert_eq!(error_code(&err), "bad_path", "{rel}");
+            assert!(
+                format!("{err:?}").contains("隐藏路径不可访问"),
+                "{rel} 的错误信息应说明隐藏路径不可访问"
+            );
+        }
+        assert!(resolve(&root, "notes/a.md").is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_allows_targets_that_do_not_exist_yet() {
+        let root = temp_workspace("create");
+        // Creating files/directories and rename targets must still resolve before they exist.
+        let target = resolve(&root, "notes/sub/deep.md").expect("不存在的目标应可解析");
+        assert_eq!(target, root.join("notes/sub/deep.md"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_rejects_symlink_escape() {
+        let root = temp_workspace("escape");
+        let outside = temp_workspace("outside");
+        std::fs::write(outside.join("secret.txt"), b"top secret").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let err = resolve(&root, "link/secret.txt").expect_err("符号链接不能逃出工作区");
+        assert_eq!(error_code(&err), "bad_path");
+        assert!(resolve(&root, "link").is_err(), "链接本身也不可作为目标");
+
+        let _ = std::fs::remove_file(root.join("link"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn language_for_unknown_extension_is_plaintext() {
+        assert_eq!(language_for("notes/a.md"), "markdown");
+        assert_eq!(language_for("src/main.rs"), "rust");
+        assert_eq!(language_for("data.unknownext"), "plaintext");
+        assert_eq!(language_for("Makefile"), "plaintext");
+    }
 }

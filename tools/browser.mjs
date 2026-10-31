@@ -2,6 +2,7 @@
 // live sync, the online-user panel and undo isolation.
 // Usage: node tools/browser.mjs [baseUrl] [bootstrapKeyFile]
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import puppeteer from 'puppeteer-core';
 import nacl from 'tweetnacl';
 
@@ -55,6 +56,35 @@ async function login(page, username, key) {
   await page.type('textarea.key-input', key, { delay: 5 });
   await page.click('.login-submit');
   await page.waitForSelector('.app-shell', { timeout: 20000 });
+}
+
+// --- TOTP helpers (same vectors as the smoke test) ---
+function base32Decode(input) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of String(input).replace(/=+$/, '').toUpperCase()) {
+    const idx = alphabet.indexOf(ch);
+    if (idx < 0) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+}
+function totpCode(secretB32, offset = 0) {
+  const counter = Math.floor(Date.now() / 30000) + offset;
+  const buf = Buffer.alloc(8);
+  buf.writeUInt32BE(Math.floor(counter / 2 ** 32), 0);
+  buf.writeUInt32BE(counter >>> 0, 4);
+  const mac = crypto.createHmac('sha1', base32Decode(secretB32)).update(buf).digest();
+  const at = mac[mac.length - 1] & 0x0f;
+  const bin = ((mac[at] & 0x7f) << 24) | (mac[at + 1] << 16) | (mac[at + 2] << 8) | mac[at + 3];
+  return String(bin % 1e6).padStart(6, '0');
 }
 
 async function openFile(page, relPath) {
@@ -390,6 +420,96 @@ async function main() {
   check('管理员页面列出用户', adminOk);
   await pageA.screenshot({ path: '/tmp/shot-admin.png' });
 
+  console.log('\n=== 9b. 2FA 门禁与密钥重置 ===');
+  const twoName = `two_${suffix}`;
+  const twoUser = await createUser(adminApi.cookie, twoName);
+  const firstKey = twoUser.private_key;
+  const twoApi = await apiLogin(twoName, firstKey);
+  const setupRes = await fetch(`${BASE}/api/me/2fa/setup`, { method: 'POST', headers: { cookie: twoApi.cookie } });
+  const setup = await setupRes.json();
+  const enabled = await fetch(`${BASE}/api/me/2fa/enable`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: twoApi.cookie },
+    body: JSON.stringify({ code: totpCode(setup.secret) }),
+  });
+  check('测试账号开启 2FA', enabled.ok, `HTTP ${enabled.status}`);
+
+  const ctxC = await browser.createBrowserContext();
+  const pageC = await ctxC.newPage();
+  await pageC.goto(`${BASE}/#/login`, { waitUntil: 'networkidle2' });
+  await pageC.waitForSelector('input.input', { timeout: 15000 });
+  await pageC.type('input.input', twoName, { delay: 10 });
+  await pageC.click('textarea.key-input');
+  await pageC.type('textarea.key-input', firstKey, { delay: 5 });
+  await pageC.click('.login-submit');
+  const totpStep = await pageC
+    .waitForSelector('input.totp-input', { timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  check('第一因子通过后索要动态验证码', totpStep);
+  if (totpStep) {
+    await pageC.type('input.totp-input', totpCode(setup.secret), { delay: 20 });
+    const entered = await pageC
+      .waitForSelector('.app-shell', { timeout: 20000 })
+      .then(() => true)
+      .catch(() => false);
+    check('输入动态验证码后进入工作区', entered);
+
+    if (entered) {
+      await pageC.evaluate(() => {
+        const btn = document.querySelector('.icon-btn[aria-label="打开设置"]');
+        if (btn) btn.click();
+        else [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '设置')?.click();
+      });
+      await pageC.waitForFunction(() => document.body.innerText.includes('重新生成密钥'), { timeout: 15000 });
+      await pageC.evaluate(() => {
+        [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === '重新生成密钥')?.click();
+      });
+      const askedCode = await pageC
+        .waitForFunction(() => document.querySelectorAll('[role="dialog"]').length >= 2, { timeout: 10000 })
+        .then(() => true)
+        .catch(() => false);
+      check('重置密钥前要求输入验证码', askedCode);
+
+      if (askedCode) {
+        const boxes = await pageC.$$('[role="dialog"] .totp-input');
+        await boxes[boxes.length - 1].type(totpCode(setup.secret), { delay: 20 });
+        await pageC.evaluate(() => {
+          const dialogs = [...document.querySelectorAll('[role="dialog"]')];
+          [...dialogs[dialogs.length - 1].querySelectorAll('button')].find((b) => b.textContent.trim() === '继续')?.click();
+        });
+        const askedConfirm = await pageC
+          .waitForFunction((n) => document.body.innerText.includes(n), { timeout: 10000 }, '重新生成密钥？')
+          .then(() => true)
+          .catch(() => false);
+        check('验证码通过后弹出二次确认', askedConfirm);
+
+        if (askedConfirm) {
+          const resetResponse = pageC
+            .waitForResponse((r) => r.url().includes('/api/me/keypair') && r.request().method() === 'POST', { timeout: 20000 })
+            .catch(() => null);
+          await pageC.evaluate(() => {
+            const dialogs = [...document.querySelectorAll('[role="dialog"]')];
+            [...dialogs[dialogs.length - 1].querySelectorAll('button')].find((b) => b.textContent.trim() === '重新生成')?.click();
+          });
+          const resetRes = await resetResponse;
+          check('带验证码的重置请求被接受', !!resetRes && resetRes.status() === 200, resetRes ? `HTTP ${resetRes.status()}` : '无响应');
+          const newKeyShown = await pageC
+            .waitForFunction(() => document.body.innerText.includes('复制密钥'), { timeout: 15000 })
+            .then(() => true)
+            .catch(() => false);
+          check('展示一次性新密钥', newKeyShown);
+          const storedKey = await pageC.evaluate((name) => localStorage.getItem(`mc.key.${name}`), twoName);
+          check('本地保存的密钥已更新', !!storedKey && storedKey !== firstKey);
+          await pageC.evaluate(() => {
+            const dialogs = [...document.querySelectorAll('[role="dialog"]')];
+            [...dialogs[dialogs.length - 1].querySelectorAll('button')].find((b) => b.textContent.trim().includes('我已保存'))?.click();
+          });
+        }
+      }
+    }
+  }
+
   // Leave nothing behind: the throwaway account would otherwise pile up in the
   // user list of whoever runs this test.
   await browser.close();
@@ -398,6 +518,11 @@ async function main() {
     headers: { cookie: adminApi.cookie },
   });
   check('删除测试账号', del.ok, `HTTP ${del.status}`);
+  const delTwo = await fetch(`${BASE}/api/admin/users/${twoUser.user.id}`, {
+    method: 'DELETE',
+    headers: { cookie: adminApi.cookie },
+  });
+  check('删除 2FA 测试账号', delTwo.ok, `HTTP ${delTwo.status}`);
 
   console.log(`\n${failures === 0 ? '\x1b[32m浏览器测试全部通过\x1b[0m' : `\x1b[31m${failures} 项失败\x1b[0m`}\n`);
   process.exit(failures === 0 ? 0 : 1);

@@ -1,5 +1,11 @@
 // Admin view (#/admin): user management, keypair/2FA resets, user creation.
-import { api, storeKey } from '../net/api.js'
+//
+// Private keys of other accounts are display-once material only: they are shown
+// in the key panel (copy / download) and never written to this browser, so no
+// `mc.key.<other-user>` entry is ever produced here (audit #3). Legacy entries
+// left behind by older versions are deliberately NOT purged on load — they are
+// someone else's data and wiping them from a shared browser is not our call.
+import { api } from '../net/api.js'
 import { confirmDialog, openModal } from '../ui/modal.js'
 import { privateKeyPanel } from '../ui/secret.js'
 import { toastError, toastSuccess } from '../ui/toast.js'
@@ -553,7 +559,8 @@ export function mountAdmin(host, opts) {
     createBtn.classList.add('is-busy')
     try {
       const res = await api.adminCreateUser(username, role)
-      storeKey(res.user.username, res.private_key)
+      // The new user's seed is shown once in the key panel below and is never
+      // written to this browser (audit #3): only its owner may hold it.
       usernameInput.value = ''
       await loadUsers()
       showKeyModal({
@@ -581,7 +588,7 @@ export function mountAdmin(host, opts) {
     if (!ok) return
     try {
       const res = await api.adminResetKeypair(row.id)
-      storeKey(row.username, res.private_key)
+      // Same rule as createUser: display only, never persist another user's key.
       await loadUsers()
       showKeyModal({
         title: '密钥已重置',

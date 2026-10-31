@@ -62,6 +62,14 @@ pub struct ChallengeRow {
     pub nonce: Vec<u8>,
 }
 
+/// A pending 2FA ticket: the user it belongs to plus how many codes were already
+/// rejected for it.
+#[derive(Debug, Clone)]
+pub struct MfaTicketUser {
+    pub user: UserRow,
+    pub attempts: i32,
+}
+
 /// Flat mirror of a `users` row, so column order lives in exactly one place.
 #[derive(FromRow)]
 struct UserRecord {
@@ -98,6 +106,15 @@ struct ChallengeRecord {
     nonce: Vec<u8>,
 }
 
+/// Joined `mfa_tickets` + `users` row: the user columns flatten into [`UserRecord`]
+/// and `attempts` comes from the ticket itself.
+#[derive(FromRow)]
+struct MfaTicketRecord {
+    #[sqlx(flatten)]
+    user: UserRecord,
+    attempts: i32,
+}
+
 const USER_COLUMNS: &str =
     "id, username, role, color, public_key, totp_secret_enc, totp_enabled, created_at";
 
@@ -112,6 +129,17 @@ pub fn now_ms() -> i64 {
 
 pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Hex SHA-256 of a session token: what `sessions.token` actually stores.
+fn hash_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(token.as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut out, byte| {
+            out.push_str(&format!("{byte:02x}"));
+            out
+        })
 }
 
 // ---------------------------------------------------------------- schema
@@ -130,6 +158,7 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      TEXT NOT NULL
 );
 
+-- `token` holds sha256_hex(session token), never the token itself.
 CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -147,8 +176,13 @@ CREATE TABLE IF NOT EXISTS challenges (
 CREATE TABLE IF NOT EXISTS mfa_tickets (
     id         TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    attempts   INTEGER NOT NULL DEFAULT 0,
     expires_at BIGINT NOT NULL
 );
+
+-- Upgrade path for databases created before 0.1.1, where `mfa_tickets` had no
+-- attempt counter (`CREATE TABLE IF NOT EXISTS` leaves old tables untouched).
+ALTER TABLE mfa_tickets ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
@@ -311,13 +345,17 @@ impl Db {
 
     // ------------------------------------------------------------ sessions
 
+    /// Create a session and return the **raw** token for the cookie. Only
+    /// `sha256_hex(token)` reaches the database, so a dumped `sessions` table cannot be
+    /// replayed as live cookies. Sessions written in plain text by older versions can
+    /// no longer match anything and simply expire on their own (see [`Db::cleanup`]).
     pub async fn create_session(&self, user_id: &str, ttl_secs: i64) -> Result<String> {
         let token = crypto::random_token();
         let now = now_ms();
         sqlx::query(
             "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)",
         )
-        .bind(&token)
+        .bind(hash_token(&token))
         .bind(user_id)
         .bind(now)
         .bind(now + ttl_secs * 1000)
@@ -332,7 +370,7 @@ impl Db {
              WHERE s.token = $1 AND s.expires_at > $2"
         );
         let record = sqlx::query_as::<_, UserRecord>(&sql)
-            .bind(token)
+            .bind(hash_token(token))
             .bind(now_ms())
             .fetch_optional(&self.pool)
             .await?;
@@ -341,7 +379,7 @@ impl Db {
 
     pub async fn delete_session(&self, token: &str) -> Result<()> {
         sqlx::query("DELETE FROM sessions WHERE token = $1")
-            .bind(token)
+            .bind(hash_token(token))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -350,6 +388,17 @@ impl Db {
     pub async fn delete_user_sessions(&self, user_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Revoke every session of `user_id` except the one identified by `keep_token`
+    /// (the caller's own session), e.g. after a self-service key reset.
+    pub async fn delete_user_sessions_except(&self, user_id: &str, keep_token: &str) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND token <> $2")
+            .bind(user_id)
+            .bind(hash_token(keep_token))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -417,19 +466,38 @@ impl Db {
         Ok(id)
     }
 
-    /// Look up the user behind a ticket. The ticket is kept so a wrong code can be
-    /// retried, and it stops working once it expires.
-    pub async fn mfa_ticket_user(&self, ticket: &str) -> Result<Option<UserRow>> {
+    /// Look up the user behind a ticket together with its failed-attempt counter. The
+    /// ticket is kept so a wrong code can be retried, and it stops working once it
+    /// expires or once the caller consumed it after too many failures.
+    pub async fn mfa_ticket_user(&self, ticket: &str) -> Result<Option<MfaTicketUser>> {
         let sql = format!(
-            "SELECT {USER_COLUMNS_Q} FROM mfa_tickets t JOIN users u ON u.id = t.user_id
+            "SELECT {USER_COLUMNS_Q}, t.attempts FROM mfa_tickets t JOIN users u ON u.id = t.user_id
              WHERE t.id = $1 AND t.expires_at > $2"
         );
-        let record = sqlx::query_as::<_, UserRecord>(&sql)
+        let record = sqlx::query_as::<_, MfaTicketRecord>(&sql)
             .bind(ticket)
             .bind(now_ms())
             .fetch_optional(&self.pool)
             .await?;
-        record.map(UserRecord::into_row).transpose()
+        record
+            .map(|record| {
+                Ok::<_, anyhow::Error>(MfaTicketUser {
+                    user: record.user.into_row()?,
+                    attempts: record.attempts,
+                })
+            })
+            .transpose()
+    }
+
+    /// Record one rejected TOTP code on `ticket` and return the new total.
+    pub async fn bump_mfa_attempts(&self, ticket_id: &str) -> Result<i32> {
+        let attempts: Option<i32> = sqlx::query_scalar(
+            "UPDATE mfa_tickets SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts",
+        )
+        .bind(ticket_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(attempts.unwrap_or_default())
     }
 
     pub async fn consume_mfa_ticket(&self, ticket: &str) -> Result<()> {
@@ -470,6 +538,8 @@ impl Db {
 
     pub async fn cleanup(&self) -> Result<()> {
         let now = now_ms();
+        // Sessions stored in plain text by versions before 0.1.1 never match a hashed
+        // lookup any more, so they are dead already and get deleted here as they expire.
         sqlx::query("DELETE FROM sessions WHERE expires_at <= $1")
             .bind(now)
             .execute(&self.pool)
@@ -512,3 +582,20 @@ const PALETTE: [&str; 10] = [
     "#70dbbc", "#80c7f8", "#c9b0fb", "#f89caa", "#f1bd73", "#74d3d8", "#a9d17f", "#dfa8e1",
     "#fba98a", "#9fb0c9",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::hash_token;
+
+    #[test]
+    fn session_tokens_are_stored_hashed() {
+        let token = "raw-session-token";
+        let hashed = hash_token(token);
+        assert_eq!(hashed.len(), 64);
+        assert!(hashed.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(hashed, token);
+        // Stable, and distinct per token.
+        assert_eq!(hashed, hash_token(token));
+        assert_ne!(hashed, hash_token("other-token"));
+    }
+}

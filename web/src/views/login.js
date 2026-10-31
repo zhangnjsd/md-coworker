@@ -9,6 +9,8 @@ const FRIENDLY_ERRORS = {
   bad_signature: '密钥与该用户不匹配，请粘贴完整私钥或重新选择 .key 文件',
   unknown_user: '用户不存在，请核对用户名或向管理员索取该账号的私钥文件',
   bad_totp: '验证码错误或已过期，请重新输入当前 6 位验证码',
+  // docs/protocol.md §10.1: auth endpoints are token-bucket limited now.
+  rate_limited: '尝试过于频繁，请稍后再试',
   unauthorized: '登录状态已失效，请重新登录',
   network_error: '无法连接服务端，请确认后端服务已启动'
 }

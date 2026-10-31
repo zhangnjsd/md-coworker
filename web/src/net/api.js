@@ -18,10 +18,16 @@ const CODE_MESSAGES = {
   network_error: '无法连接服务端，请确认后端已启动',
   bad_path: '路径不合法（不允许绝对路径或 ..）',
   bad_filename: '文件名不合法',
-  too_large: '文件超过管理员设置的大小上限',
+  // docs/protocol.md §10.1: 413 covers both reads over 100 MiB and uploads over
+  // the admin limit, so the copy must not name only one of them.
+  too_large: '文件太大，无法读取或上传',
   file_busy: '该文件正在被协作编辑，请等所有人离开后再试',
   bad_limit: '大小上限必须在 1 KiB 到 512 MiB 之间',
   too_many_files: '一次最多上传 20 个文件',
+  // --- v1.3 hardening (§10.1) ---
+  rate_limited: '尝试过于频繁，请稍后再试',
+  forbidden_origin: '请求来源不被允许（跨站访问已被拒绝）',
+  mfa_required: '需要输入当前的 6 位验证码',
 }
 
 const STATUS_MESSAGES = {
@@ -30,8 +36,9 @@ const STATUS_MESSAGES = {
   403: '没有权限执行该操作',
   404: '资源不存在',
   409: '操作冲突：目标已存在',
-  413: '文件超过管理员设置的大小上限',
+  413: '文件太大，无法读取或上传',
   415: '该文件不是 UTF-8 文本，无法在编辑器中打开',
+  429: '尝试过于频繁，请稍后再试',
   500: '服务端内部错误',
   502: '网关错误',
   503: '服务暂不可用',
@@ -175,7 +182,16 @@ export const api = {
   me: () => request('GET', '/api/me'),
 
   // --- account self service ---
-  regenerateKeypair: () => post('/api/me/keypair', {}),
+  /**
+   * Rotate the caller's keypair.
+   * docs/protocol.md §10.3: accounts with 2FA on must send `{ totp }`; without
+   * 2FA the field is irrelevant but the contract allows an explicit `null`.
+   * @param {{ totp?: string | null }} [opts]
+   */
+  regenerateKeypair: (opts) => {
+    const raw = opts && typeof opts.totp === 'string' ? opts.totp.trim() : ''
+    return post('/api/me/keypair', { totp: raw || null })
+  },
   setup2fa: () => post('/api/me/2fa/setup', {}),
   enable2fa: (code) => post('/api/me/2fa/enable', { code }),
   disable2fa: (code) => post('/api/me/2fa/disable', { code }),

@@ -71,9 +71,10 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Baseline security headers. No CSP is set on purpose: the frontend needs a Monaco
-/// blob worker and KaTeX / Mermaid inject inline styles, so a strict policy would have
-/// to allow-list each of them. The demo keeps it permissive instead.
+/// Baseline security headers, including a content security policy. The policy is not
+/// the strictest one possible (`'unsafe-inline'` styles and `blob:` workers are needed
+/// by KaTeX, Mermaid, CodeMirror and Monaco), but it locks down the parts that matter:
+/// no third-party scripts, no `eval`, no framing of the app and no base-uri rewriting.
 type SecurityHeaders = tower::layer::util::Stack<
     SetResponseHeaderLayer<HeaderValue>,
     tower::layer::util::Stack<
@@ -82,11 +83,28 @@ type SecurityHeaders = tower::layer::util::Stack<
             SetResponseHeaderLayer<HeaderValue>,
             tower::layer::util::Stack<
                 SetResponseHeaderLayer<HeaderValue>,
-                tower::layer::util::Identity,
+                tower::layer::util::Stack<
+                    SetResponseHeaderLayer<HeaderValue>,
+                    tower::layer::util::Identity,
+                >,
             >,
         >,
     >,
 >;
+
+/// Content security policy for the single page app. `connect-src` has to name the
+/// WebSocket schemes because the collaboration channel shares the page origin.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+script-src 'self'; \
+style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; \
+font-src 'self' data:; \
+connect-src 'self' ws: wss:; \
+worker-src 'self' blob:; \
+frame-ancestors 'self'; \
+base-uri 'none'; \
+form-action 'self'; \
+object-src 'none'";
 
 fn security_headers() -> SecurityHeaders {
     tower::ServiceBuilder::new()
@@ -105,6 +123,10 @@ fn security_headers() -> SecurityHeaders {
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("cross-origin-opener-policy"),
             HeaderValue::from_static("same-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         ))
         .into_inner()
 }

@@ -151,8 +151,24 @@ function ensureStyleNode() {
   return node
 }
 
+// Awareness payloads are attacker controlled (any room member can publish any
+// colour/name), so nothing from them may reach the stylesheet unvalidated.
+const CURSOR_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+const DEFAULT_CURSOR_COLOR = '#8dcdbb'
+
+/** Only accept a literal #rrggbb, otherwise fall back to the house colour. */
+function safeCursorColor(value) {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  return CURSOR_COLOR_RE.test(raw) ? raw : DEFAULT_CURSOR_COLOR
+}
+
 function escapeCssText(value) {
-  return String(value).replace(/["\\]/g, '\\$&').replace(/\n/g, ' ')
+  return String(value)
+    .replace(/["\\]/g, '\\$&')
+    .replace(/\n/g, ' ')
+    // `}`/`<`/`>`/`;` have no business inside a CSS string and are dropped
+    // outright so a crafted name cannot close the rule or the style element.
+    .replace(/[<>{};]/g, '')
 }
 
 /**
@@ -167,7 +183,7 @@ function createCursorPainter(awareness, ownClientId) {
     awareness.getStates().forEach((state, clientID) => {
       if (clientID === ownClientId) return
       const user = state.user || {}
-      const color = user.color || '#4f9cf9'
+      const color = safeCursorColor(user.color)
       const name = escapeCssText(user.name || '匿名')
       chunks.push(
         `.monaco-editor .yRemoteSelection-${clientID} { background: ${hexToRgba(color, 0.26)}; }`,
@@ -194,9 +210,10 @@ function createCursorPainter(awareness, ownClientId) {
 }
 
 function hexToRgba(hex, alpha) {
-  const value = String(hex || '').replace('#', '')
+  // Callers pass a value that already went through safeCursorColor().
+  const value = String(hex || DEFAULT_CURSOR_COLOR).replace('#', '')
   const full = value.length === 3 ? value.split('').map((c) => c + c).join('') : value
-  const num = parseInt(full.slice(0, 6) || '4f9cf9', 16)
+  const num = parseInt(full.slice(0, 6) || '8dcdbb', 16)
   const r = (num >> 16) & 255
   const g = (num >> 8) & 255
   const b = num & 255

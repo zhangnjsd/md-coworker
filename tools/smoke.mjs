@@ -2,6 +2,7 @@
 // Usage: node tools/smoke.mjs [baseUrl] [bootstrapKeyFile]
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 import nacl from 'tweetnacl';
 import WebSocket from 'ws';
 import * as Y from 'yjs';
@@ -44,7 +45,7 @@ class Client {
     let data = null;
     const text = await res.text();
     try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
-    return { status: res.status, data };
+    return { status: res.status, data, headers: res.headers };
   }
   /** Multipart upload; `files` is a list of { name, bytes, type? }. */
   async upload(dir, files, overwrite = false) {
@@ -96,6 +97,35 @@ class Client {
     }
     return { status: res.data?.status, res };
   }
+
+  /**
+   * First factor only: returns the raw `mfa_required` payload so tests can drive
+   * `POST /api/auth/mfa` by hand (lockout and rate limit cases).
+   */
+  async loginStart(username, privateKeyB64) {
+    const ch = await this.req('POST', '/api/auth/challenge', { username });
+    if (ch.status !== 200) return { status: ch.status, data: ch.data };
+    const nonce = Buffer.from(ch.data.nonce, 'base64');
+    const kp = nacl.sign.keyPair.fromSeed(Buffer.from(privateKeyB64, 'base64'));
+    const sig = Buffer.from(nacl.sign.detached(new Uint8Array(nonce), kp.secretKey)).toString('base64');
+    const res = await this.req('POST', '/api/auth/login', { challenge_id: ch.data.challenge_id, signature: sig });
+    return { status: res.data?.status, ticket: res.data?.ticket, data: res.data };
+  }
+}
+
+/** A syntactically valid signature from a key nobody registered. */
+function bogusSignature(nonceB64) {
+  const kp = nacl.sign.keyPair();
+  const nonce = new Uint8Array(Buffer.from(nonceB64, 'base64'));
+  return Buffer.from(nacl.sign.detached(nonce, kp.secretKey)).toString('base64');
+}
+
+/** A 6 digit code that is not the currently valid one. */
+function wrongCode(secretB32, i) {
+  const valid = totpCode(secretB32);
+  let candidate = String((400000 + i * 7919) % 1000000).padStart(6, '0');
+  if (candidate === valid) candidate = String((Number(candidate) + 1) % 1000000).padStart(6, '0');
+  return candidate;
 }
 
 // --- TOTP (RFC 6238, SHA1/6/30s) ---
@@ -300,8 +330,8 @@ async function main() {
   console.log('\n=== 8. 2FA 全流程 ===');
   const setup = await aClient.req('POST', '/api/me/2fa/setup');
   check('2FA setup 返回 secret 与 otpauth url', setup.status === 200 && !!setup.data.secret && setup.data.otpauth_url.startsWith('otpauth://totp/'));
-  const wrongCode = await aClient.req('POST', '/api/me/2fa/enable', { code: '000000' });
-  check('错误验证码无法启用 2FA', wrongCode.status === 400);
+  const badEnable = await aClient.req('POST', '/api/me/2fa/enable', { code: '000000' });
+  check('错误验证码无法启用 2FA', badEnable.status === 400, JSON.stringify(badEnable.data));
   const enable = await aClient.req('POST', '/api/me/2fa/enable', { code: totpCode(setup.data.secret) });
   check('正确验证码启用 2FA', enable.status === 200 && enable.data.user.twofa_enabled === true);
 
@@ -313,8 +343,8 @@ async function main() {
   const kp2 = nacl.sign.keyPair.fromSeed(Buffer.from(ca.data.private_key, 'base64'));
   const sig2 = Buffer.from(nacl.sign.detached(new Uint8Array(nonce2), kp2.secretKey)).toString('base64');
   const step2 = await fresh.req('POST', '/api/auth/login', { challenge_id: ch2.data.challenge_id, signature: sig2 });
-  const badMfa = await fresh.req('POST', '/api/auth/mfa', { ticket: step2.data.ticket, code: '123456' });
-  check('错误 TOTP 被拒绝', badMfa.status === 401);
+  const badMfa = await fresh.req('POST', '/api/auth/mfa', { ticket: step2.data.ticket, code: wrongCode(setup.data.secret, 0) });
+  check('错误 TOTP 被拒绝 (400 bad_totp)', badMfa.status === 400 && badMfa.data.error?.code === 'bad_totp', JSON.stringify(badMfa.data));
   const okMfa = await fresh.req('POST', '/api/auth/mfa', { ticket: step2.data.ticket, code: totpCode(setup.data.secret) });
   check('正确 TOTP 登录成功', okMfa.status === 200 && okMfa.data.status === 'ok');
 
@@ -412,7 +442,194 @@ async function main() {
   const delUp = await newKeyLogin.req('POST', '/api/files/delete', { path: uploadPath });
   check('清理上传的测试文件', delUp.status === 200);
 
-  console.log('\n=== 11. 管理员清理 ===');
+  console.log('\n=== 11. 安全加固 ===');
+
+  // 11a. 响应头
+  const indexRes = await fetch(`${BASE}/`);
+  const csp = indexRes.headers.get('content-security-policy') || '';
+  check('首页带 Content-Security-Policy', /default-src 'self'/.test(csp) && /object-src 'none'/.test(csp), csp);
+  check('首页带 nosniff', indexRes.headers.get('x-content-type-options') === 'nosniff');
+  const healthRes = await fetch(`${BASE}/api/health`);
+  check('API 响应也带 CSP', !!healthRes.headers.get('content-security-policy'));
+
+  // 11b. 隐藏路径不可读
+  fs.writeFileSync(`${WS_ROOT}/.secret-${suffix}.txt`, 'hidden');
+  const hiddenFile = await newKeyLogin.req('GET', `/api/file?path=${encodeURIComponent(`.secret-${suffix}.txt`)}`);
+  check(
+    '隐藏文件读取被拒绝 400 bad_path',
+    hiddenFile.status === 400 && hiddenFile.data.error?.code === 'bad_path',
+    JSON.stringify(hiddenFile.data),
+  );
+  const hiddenRaw = await newKeyLogin.raw(`.secret-${suffix}.txt`);
+  check('/api/raw 同样拒绝隐藏文件', hiddenRaw.status === 400);
+  const hiddenDeep = await newKeyLogin.req('GET', '/api/file?path=.git%2Fconfig');
+  check('隐藏目录下的文件被拒绝', hiddenDeep.status === 400);
+  fs.unlinkSync(`${WS_ROOT}/.secret-${suffix}.txt`);
+
+  // 11c. 符号链接逃逸
+  const linkName = `link-${suffix}`;
+  fs.symlinkSync('/etc', `${WS_ROOT}/${linkName}`);
+  const linkRead = await newKeyLogin.req('GET', `/api/file?path=${encodeURIComponent(`${linkName}/hostname`)}`);
+  check(
+    '符号链接无法逃出工作区',
+    linkRead.status === 400 && linkRead.data.error?.code === 'bad_path',
+    JSON.stringify(linkRead.data),
+  );
+  const linkRaw = await newKeyLogin.raw(`${linkName}/hostname`);
+  check('/api/raw 同样拒绝符号链接', linkRaw.status === 400, String(linkRaw.status));
+  const treeAfterLink = await newKeyLogin.req('GET', '/api/files');
+  check(
+    '文件树跳过符号链接',
+    treeAfterLink.status === 200 && !JSON.stringify(treeAfterLink.data).includes(linkName),
+  );
+  fs.unlinkSync(`${WS_ROOT}/${linkName}`);
+
+  // 11d. 不再泄露服务端绝对路径
+  const filesNoRoot = await newKeyLogin.req('GET', '/api/files');
+  const absoluteRoot = fs.realpathSync(WS_ROOT);
+  check(
+    '/api/files 不再返回绝对路径',
+    filesNoRoot.status === 200 && !('root' in filesNoRoot.data) && !JSON.stringify(filesNoRoot.data).includes(absoluteRoot),
+    JSON.stringify(Object.keys(filesNoRoot.data || {})),
+  );
+
+  // 11e. 会话令牌只存哈希
+  const rawToken = (newKeyLogin.cookie || '').split('=')[1] || '';
+  try {
+    const psql = process.env.PG_PSQL || '/usr/lib/postgresql/18/bin/psql';
+    const stored = execSync(
+      `${psql} -h 127.0.0.1 -p 5433 -U md_coworker -d md_coworker -tAc "select token from sessions where user_id = '${ca.data.user.id}'"`,
+      { encoding: 'utf8' },
+    )
+      .trim()
+      .split('\n')
+      .filter(Boolean);
+    check(
+      '数据库里的会话令牌是 SHA-256（不是明文）',
+      stored.length > 0 && stored.every((row) => /^[0-9a-f]{64}$/.test(row) && row !== rawToken),
+      JSON.stringify(stored).slice(0, 120),
+    );
+  } catch (err) {
+    check('数据库里的会话令牌是 SHA-256（跳过：psql 不可用）', true, String(err).slice(0, 80));
+  }
+
+  // 11f. 2FA 账号重置密钥需要验证码，并吊销其他会话
+  const secName = `sec_${suffix}`.slice(0, 32);
+  const secCreated = await admin.req('POST', '/api/admin/users', { username: secName });
+  const secClient = new Client('sec');
+  const secFirstKey = secCreated.data.private_key;
+  await secClient.login(secName, secFirstKey);
+  const secSetup = await secClient.req('POST', '/api/me/2fa/setup');
+  const secSecret = secSetup.data?.secret;
+  const secEnable = await secClient.req('POST', '/api/me/2fa/enable', { code: totpCode(secSecret) });
+  check('安全用例账号已启用 2FA', secEnable.status === 200 && secEnable.data.user.twofa_enabled === true);
+
+  const noTotp = await secClient.req('POST', '/api/me/keypair', {});
+  check(
+    '缺少验证码时拒绝重置密钥 (mfa_required)',
+    noTotp.status === 400 && noTotp.data.error?.code === 'mfa_required',
+    JSON.stringify(noTotp.data),
+  );
+  const badTotp = await secClient.req('POST', '/api/me/keypair', { totp: wrongCode(secSecret, 3) });
+  check(
+    '错误验证码被拒绝 (bad_totp)',
+    badTotp.status === 400 && badTotp.data.error?.code === 'bad_totp',
+    JSON.stringify(badTotp.data),
+  );
+
+  const secSecond = new Client('sec-2');
+  const secSecondLogin = await secSecond.login(secName, secFirstKey, () => totpCode(secSecret));
+  check('同一账号的第二个会话已建立', secSecondLogin.status === 'ok', JSON.stringify(secSecondLogin));
+
+  const secReset = await secClient.req('POST', '/api/me/keypair', { totp: totpCode(secSecret) });
+  check('带正确验证码可以重置密钥', secReset.status === 200 && !!secReset.data.private_key, JSON.stringify(secReset.data));
+  const staleSession = await secSecond.req('GET', '/api/me');
+  check('重置后其他会话被吊销 (401)', staleSession.status === 401);
+  const keptSession = await secClient.req('GET', '/api/me');
+  check('当前会话保持有效', keptSession.status === 200);
+
+  // 11g. 2FA 票据连续 5 次错误即作废
+  const secKey = secReset.data.private_key;
+  const startLock = await secClient.loginStart(secName, secKey);
+  check('第一因子通过后拿到 mfa 票据', startLock.status === 'mfa_required' && !!startLock.ticket, JSON.stringify(startLock.data));
+  let lastWrong = null;
+  for (let i = 0; i < 5; i += 1) {
+    lastWrong = await secClient.req('POST', '/api/auth/mfa', { ticket: startLock.ticket, code: wrongCode(secSecret, i) });
+  }
+  check('错误验证码返回 bad_totp', lastWrong.status === 400 && lastWrong.data.error?.code === 'bad_totp', JSON.stringify(lastWrong.data));
+  const afterLock = await secClient.req('POST', '/api/auth/mfa', { ticket: startLock.ticket, code: totpCode(secSecret) });
+  check(
+    '连续 5 次错误后票据作废（正确验证码也不再通过）',
+    afterLock.status !== 200 && afterLock.data?.status !== 'ok',
+    JSON.stringify(afterLock.data),
+  );
+  const freshStart = await secClient.loginStart(secName, secKey);
+  const freshOk = await secClient.req('POST', '/api/auth/mfa', { ticket: freshStart.ticket, code: totpCode(secSecret) });
+  check('重新登录后正确验证码可用', freshOk.status === 200 && freshOk.data?.status === 'ok', JSON.stringify(freshOk.data));
+
+  // 11h. 认证限流
+  const rlName = `rl_${suffix}`.slice(0, 32);
+  await admin.req('POST', '/api/admin/users', { username: rlName });
+  const rlClient = new Client('rl');
+  let lastFailure = null;
+  for (let i = 0; i < 10; i += 1) {
+    const ch = await rlClient.req('POST', '/api/auth/challenge', { username: rlName });
+    lastFailure = await rlClient.req('POST', '/api/auth/login', {
+      challenge_id: ch.data?.challenge_id,
+      signature: ch.data?.nonce ? bogusSignature(ch.data.nonce) : 'AAAA',
+    });
+  }
+  check('10 次失败仍在 401 阶段', lastFailure.status === 401, String(lastFailure.status));
+  const ch11 = await rlClient.req('POST', '/api/auth/challenge', { username: rlName });
+  const limited = await rlClient.req('POST', '/api/auth/login', {
+    challenge_id: ch11.data?.challenge_id,
+    signature: ch11.data?.nonce ? bogusSignature(ch11.data.nonce) : 'AAAA',
+  });
+  check(
+    '超过失败上限返回 429 rate_limited',
+    limited.status === 429 && limited.data.error?.code === 'rate_limited',
+    JSON.stringify(limited.data),
+  );
+  check('限流响应带 Retry-After', Number(limited.headers?.get('retry-after')) > 0, String(limited.headers?.get('retry-after')));
+
+  // 11i. /ws 的 Origin 校验
+  const badOriginStatus = await new Promise((resolve) => {
+    const sock = new WebSocket(`${WS_BASE}/ws`, {
+      headers: { cookie: secClient.cookie, origin: 'http://evil.example' },
+    });
+    sock.on('unexpected-response', (_req, res) => {
+      resolve(res.statusCode);
+      sock.terminate();
+    });
+    sock.on('error', () => resolve(403));
+    sock.on('open', () => {
+      resolve(0);
+      sock.close();
+    });
+    setTimeout(() => resolve(-1), 4000);
+  });
+  check(`/ws 拒绝跨站 Origin (403, got ${badOriginStatus})`, badOriginStatus === 403);
+
+  const sameOriginStatus = await new Promise((resolve) => {
+    const sock = new WebSocket(`${WS_BASE}/ws`, {
+      headers: { cookie: secClient.cookie, origin: BASE },
+    });
+    sock.on('unexpected-response', (_req, res) => {
+      resolve(res.statusCode);
+      sock.terminate();
+    });
+    sock.on('error', () => resolve(-1));
+    sock.on('open', () => {
+      resolve(101);
+      sock.close();
+    });
+    setTimeout(() => resolve(-1), 4000);
+  });
+  check(`/ws 接受同源 Origin (101, got ${sameOriginStatus})`, sameOriginStatus === 101);
+
+  await admin.req('DELETE', `/api/admin/users/${secCreated.data.user.id}`);
+
+  console.log('\n=== 12. 管理员清理 ===');
   const delUser = await admin.req('DELETE', `/api/admin/users/${cb.data.user.id}`);
   check('删除用户成功', delUser.status === 200);
   const delUser2 = await admin.req('DELETE', `/api/admin/users/${ca.data.user.id}`);

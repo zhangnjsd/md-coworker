@@ -243,17 +243,107 @@ export function openSettings(opts) {
     }
   }
 
+  // ------------------------------------------------------------- totp prompt
+
+  /**
+   * Ask for the current 6-digit TOTP code before a sensitive self-service call.
+   * Reuses the generic modal plus the `.totp-input` control already used by the
+   * 2FA section, so no new widget/component library is introduced.
+   * @returns {Promise<string | null>} the code, or null when the user cancels.
+   */
+  function promptTotpCode() {
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (value) => {
+        if (settled) return
+        settled = true
+        resolve(value)
+      }
+
+      const codeInput = el('input', {
+        class: 'input totp-input',
+        attrs: {
+          type: 'text',
+          inputmode: 'numeric',
+          autocomplete: 'one-time-code',
+          maxlength: '6',
+          placeholder: '000000',
+          spellcheck: 'false',
+          'aria-label': '当前 6 位验证码',
+        },
+      })
+      const errorNode = el('p', { class: 'field-error', style: { display: 'none' } })
+
+      codeInput.addEventListener('input', () => {
+        const digits = codeInput.value.replace(/\D/g, '').slice(0, 6)
+        if (digits !== codeInput.value) codeInput.value = digits
+      })
+
+      const body = el(
+        'div',
+        { class: 'field' },
+        el('span', { class: 'field-label', text: '当前 6 位验证码' }),
+        codeInput,
+        el('p', {
+          class: 'settings-hint',
+          text: '该账号已开启二次验证，重新生成密钥前需要先确认是本人操作。',
+        }),
+        errorNode,
+      )
+
+      const submit = () => {
+        const code = codeInput.value.trim()
+        if (!/^\d{6}$/.test(code)) {
+          errorNode.textContent = '请输入身份验证器中的 6 位数字验证码'
+          errorNode.style.display = ''
+          codeInput.focus()
+          return
+        }
+        finish(code)
+        modal.close()
+      }
+
+      codeInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault()
+          submit()
+        }
+      })
+
+      const modal = openModal({
+        title: '输入验证码',
+        subtitle: `账号 ${user.username}`,
+        body,
+        width: 440,
+        actions: [
+          { label: '取消', kind: 'ghost', onClick: () => finish(null) },
+          { label: '继续', kind: 'primary', onClick: submit, close: false },
+        ],
+        onClose: () => finish(null),
+      })
+      codeInput.focus()
+    })
+  }
+
   // ------------------------------------------------------------- keypair
 
   function renderKeypair() {
+    const needsTotp = !!user.twofa_enabled
     const node = section('登录密钥')
     node.append(
       el('p', {
         class: 'settings-text',
-        text: '重新生成后旧密钥立即失效，请把新密钥保存到安全位置。',
+        text: needsTotp
+          ? '重新生成后旧密钥立即失效，其他设备会被登出；因为已开启二次验证，需要先输入当前 6 位验证码。'
+          : '重新生成后旧密钥立即失效，请把新密钥保存到安全位置。',
       }),
     )
     const regenBtn = button('重新生成密钥', 'danger', async () => {
+      let totp = null
+      if (needsTotp) {
+        totp = await promptTotpCode()
+        if (totp === null) return
+      }
       const ok = await confirmDialog({
         title: '重新生成密钥？',
         message: '当前私钥将立即失效，无法再用它登录。新私钥只显示一次，请立刻复制或下载保存。',
@@ -264,7 +354,7 @@ export function openSettings(opts) {
       regenBtn.disabled = true
       regenBtn.classList.add('is-busy')
       try {
-        const res = await api.regenerateKeypair()
+        const res = await api.regenerateKeypair({ totp })
         storeKey(user.username, res.private_key)
         toastSuccess('密钥已重新生成，旧密钥已失效')
         const keyModal = openModal({
@@ -274,13 +364,20 @@ export function openSettings(opts) {
             username: user.username,
             privateKey: res.private_key,
             publicKey: res.public_key,
-            note: '旧密钥已失效。关闭此窗口后无法再次查看，请立刻保存到安全位置。',
+            note: '旧密钥已立即失效，其他设备会被登出。关闭此窗口后无法再次查看，请立刻保存到安全位置。',
           }),
           width: 640,
           actions: [{ label: '我已保存，关闭', kind: 'primary', onClick: () => keyModal.close() }],
         })
       } catch (err) {
-        toastError(err.message || '生成密钥失败，请重试')
+        const code = err && err.code
+        if (code === 'mfa_required') {
+          toastError('需要输入当前的 6 位验证码才能重新生成密钥')
+        } else if (code === 'bad_totp') {
+          toastError('验证码错误或已过期，请重新输入当前 6 位验证码')
+        } else {
+          toastError(err.message || '生成密钥失败，请重试')
+        }
       } finally {
         regenBtn.classList.remove('is-busy')
         regenBtn.disabled = false

@@ -22,6 +22,7 @@ pub struct AppError {
     code: String,
     message: String,
     cause: Option<anyhow::Error>,
+    retry_after: Option<u64>,
 }
 
 impl AppError {
@@ -31,6 +32,7 @@ impl AppError {
             code: code.into(),
             message: message.into(),
             cause: None,
+            retry_after: None,
         }
     }
 
@@ -54,12 +56,29 @@ impl AppError {
         Self::new(StatusCode::CONFLICT, code, message)
     }
 
+    pub fn too_large(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, code, message)
+    }
+
+    /// 429 with a `Retry-After` header (seconds) plus the same hint in the message so
+    /// clients that only read the body still know how long to wait.
+    pub fn rate_limited(retry_after_secs: u64) -> Self {
+        let mut error = Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            format!("请求过于频繁，请 {retry_after_secs} 秒后再试"),
+        );
+        error.retry_after = Some(retry_after_secs);
+        error
+    }
+
     pub fn internal(error: anyhow::Error) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal_error".to_string(),
             message: "服务器内部错误".to_string(),
             cause: Some(error),
+            retry_after: None,
         }
     }
 }
@@ -93,6 +112,7 @@ impl From<anyhow::Error> for AppError {
                 code: http.code.clone(),
                 message: http.message.clone(),
                 cause: http.cause.as_ref().map(|e| anyhow::anyhow!("{:#}", e)),
+                retry_after: http.retry_after,
             };
         }
         AppError::internal(error)
@@ -129,7 +149,15 @@ impl IntoResponse for AppError {
         let body = Json(json!({
             "error": { "code": self.code, "message": self.message }
         }));
-        (self.status, body).into_response()
+        let mut response = (self.status, body).into_response();
+        if let Some(secs) = self.retry_after {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 

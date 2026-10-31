@@ -19,6 +19,7 @@ use axum::{
         State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
+    http::{HeaderMap, header},
     response::Response,
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
@@ -29,10 +30,10 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc};
 use yrs::{
@@ -43,6 +44,9 @@ const ROOT_TEXT: &str = "content";
 const FLUSH_INTERVAL: Duration = Duration::from_millis(400);
 const PRESENCE_INTERVAL: Duration = Duration::from_millis(1000);
 const PRESENCE_TTL_MS: i64 = 30_000;
+/// How long a rename/delete waits for another writer of the same path before giving up
+/// on ordering and proceeding (the operations it guards take microseconds).
+const PATH_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------- data
 
@@ -125,9 +129,36 @@ pub struct Hub {
     cipher: Arc<Cipher>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
     agents: Mutex<HashMap<u64, Agent>>,
+    /// Paths currently being renamed or deleted. While a path sits in here, `ensure_room`
+    /// and a WebSocket `join` refuse it with `file_busy` instead of opening a room on a
+    /// file that is about to move or disappear.
+    path_locks: Mutex<HashSet<String>>,
+    path_locks_cv: Condvar,
     tx: broadcast::Sender<ServerMsg>,
     conn_seq: AtomicU64,
     last_presence: Mutex<String>,
+}
+
+/// Exclusive write lock on one workspace path, released when dropped.
+///
+/// Taken by callers that must "check nobody is collaborating, then mutate the
+/// filesystem" as one step; dropping the guard (normal return, early `?`, panic) releases
+/// the path for the next writer and wakes anyone waiting on it.
+pub struct PathLock<'a> {
+    locks: &'a Mutex<HashSet<String>>,
+    cv: &'a Condvar,
+    path: String,
+}
+
+impl Drop for PathLock<'_> {
+    fn drop(&mut self) {
+        let mut locks = self
+            .locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks.remove(&self.path);
+        self.cv.notify_all();
+    }
 }
 
 impl Hub {
@@ -138,6 +169,8 @@ impl Hub {
             cipher,
             rooms: Mutex::new(HashMap::new()),
             agents: Mutex::new(HashMap::new()),
+            path_locks: Mutex::new(HashSet::new()),
+            path_locks_cv: Condvar::new(),
             tx,
             conn_seq: AtomicU64::new(1),
             last_presence: Mutex::new(String::new()),
@@ -166,6 +199,12 @@ impl Hub {
 
     /// Get the room for a path, creating and loading it when necessary.
     pub fn ensure_room(&self, path: &str) -> Result<Arc<Room>, AppError> {
+        if self.is_locked(path) {
+            return Err(AppError::conflict(
+                "file_busy",
+                "该文件正在被重命名或删除，请稍后重试",
+            ));
+        }
         {
             let rooms = self.rooms.lock().expect("rooms 锁被毒化");
             if let Some(room) = rooms.get(path) {
@@ -249,6 +288,12 @@ impl Hub {
             last_saved_ms: AtomicI64::new(crate::db::now_ms()),
         });
 
+        if self.is_locked(path) {
+            return Err(AppError::conflict(
+                "file_busy",
+                "该文件正在被重命名或删除，请稍后重试",
+            ));
+        }
         let mut rooms = self.rooms.lock().expect("rooms 锁被毒化");
         Ok(rooms.entry(path.to_string()).or_insert(room).clone())
     }
@@ -267,6 +312,47 @@ impl Hub {
             .unwrap_or(false)
     }
 
+    /// Take the exclusive write lock for `path`, waiting (bounded) while another writer
+    /// holds it. The lock is released by dropping the returned guard.
+    ///
+    /// Callers use this to make "nobody is collaborating?" and the filesystem mutation
+    /// that follows it one critical section.
+    pub fn lock_path(&self, path: &str) -> PathLock<'_> {
+        let key = files::normalize_rel(path);
+        let deadline = Instant::now() + PATH_LOCK_TIMEOUT;
+        let mut locks = self
+            .path_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while locks.contains(&key) {
+            let now = Instant::now();
+            if now >= deadline {
+                tracing::warn!(path = %key, "等待路径写锁超时，继续执行");
+                break;
+            }
+            let (guard, _) = self
+                .path_locks_cv
+                .wait_timeout(locks, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks = guard;
+        }
+        locks.insert(key.clone());
+        PathLock {
+            locks: &self.path_locks,
+            cv: &self.path_locks_cv,
+            path: key,
+        }
+    }
+
+    /// Is a rename/delete currently holding the write lock for `path`?
+    pub fn is_locked(&self, path: &str) -> bool {
+        let key = files::normalize_rel(path);
+        self.path_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&key)
+    }
+
     pub fn join(&self, room: &Arc<Room>) -> usize {
         let count = room.members.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.tx.send(ServerMsg::Peers {
@@ -277,9 +363,16 @@ impl Hub {
     }
 
     pub fn leave(&self, room: &Arc<Room>) -> usize {
-        let previous = room.members.load(Ordering::Relaxed);
-        let count = if previous == 0 { 0 } else { previous - 1 };
-        room.members.store(count, Ordering::Relaxed);
+        // Decrement atomically: with a load/store pair, two connections dropping at the
+        // same time could both read 1 and store 0 (or interleave into a stale value),
+        // leaving the counter permanently non-zero and the file forever `file_busy`.
+        let previous = room
+            .members
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_sub(1))
+            })
+            .unwrap_or(0);
+        let count = previous.saturating_sub(1);
         let _ = self.tx.send(ServerMsg::Peers {
             path: room.path.clone(),
             count,
@@ -531,9 +624,97 @@ pub fn spawn_background_tasks(hub: Arc<Hub>) {
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: HeaderMap,
     auth: AuthUser,
-) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, auth.user))
+) -> Result<Response, AppError> {
+    // Reject a cross-site handshake *before* upgrading: once the socket is open the
+    // browser has already sent the cookies it holds for this origin.
+    check_origin(&headers)?;
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, auth.user)))
+}
+
+/// Split an `host[:port]` authority into a lowercase host and a port, falling back to
+/// `default_port` when the authority carries none.
+fn split_authority(authority: &str, default_port: u16) -> Option<(String, u16)> {
+    let authority = authority.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    // IPv6 literal, e.g. `[::1]:3198`.
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, tail) = rest.split_once(']')?;
+        let port = match tail.strip_prefix(':') {
+            Some(port) => port.parse().ok()?,
+            None => default_port,
+        };
+        return Some((format!("[{}]", host.to_ascii_lowercase()), port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            Some((host.to_ascii_lowercase(), port.parse().ok()?))
+        }
+        _ => Some((authority.to_ascii_lowercase(), default_port)),
+    }
+}
+
+/// Validate the `Origin` header of a WebSocket handshake against `Host`.
+///
+/// Browsers always send `Origin`; a missing header is accepted so scripts and the test
+/// suite keep working. When it is present, the origin's host and port (with `http`/`https`
+/// default ports normalised) must match the `Host` the request was addressed to.
+fn check_origin(headers: &HeaderMap) -> Result<(), AppError> {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return Ok(());
+    };
+    let origin = origin
+        .to_str()
+        .map_err(|_| AppError::forbidden("forbidden_origin", "Origin 头不是合法的 ASCII"))?
+        .trim();
+    if origin.is_empty() {
+        return Ok(());
+    }
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return Err(AppError::forbidden(
+            "forbidden_origin",
+            format!("无法解析的 Origin: {origin}"),
+        ));
+    };
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "http" | "ws" => 80,
+        "https" | "wss" => 443,
+        other => {
+            return Err(AppError::forbidden(
+                "forbidden_origin",
+                format!("不支持的 Origin 协议: {other}"),
+            ));
+        }
+    };
+    let Some((origin_host, origin_port)) = split_authority(authority, default_port) else {
+        return Err(AppError::forbidden(
+            "forbidden_origin",
+            format!("无法解析的 Origin: {origin}"),
+        ));
+    };
+    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
+        return Err(AppError::forbidden(
+            "forbidden_origin",
+            "缺少 Host 头，无法校验 Origin",
+        ));
+    };
+    let Some((host_name, host_port)) = split_authority(host, default_port) else {
+        return Err(AppError::forbidden(
+            "forbidden_origin",
+            format!("无法解析的 Host: {host}"),
+        ));
+    };
+    if host_name == origin_host && host_port == origin_port {
+        Ok(())
+    } else {
+        Err(AppError::forbidden(
+            "forbidden_origin",
+            format!("跨站 WebSocket 被拒绝（Origin: {origin}, Host: {host}）"),
+        ))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -656,6 +837,9 @@ async fn handle_client_msg(
         "join" => {
             let raw_path = msg.path.unwrap_or_default();
             let path = files::normalize_rel(&raw_path);
+            if hub.is_locked(&path) {
+                return Err("file_busy: 该文件正在被重命名或删除，请稍后重试".into());
+            }
             let room = hub
                 .ensure_room(&path)
                 .map_err(|err| format!("无法打开 {}: {}", path, err))?;
@@ -805,3 +989,81 @@ pub fn room_text(room: &Room) -> String {
 
 #[allow(dead_code)]
 fn _assert_path(_: &Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn handshake(origin: Option<&str>, host: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(origin) = origin {
+            headers.insert(header::ORIGIN, HeaderValue::from_str(origin).unwrap());
+        }
+        if let Some(host) = host {
+            headers.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn origin_absent_is_allowed() {
+        // 脚本 / 测试客户端不带 Origin，必须放行。
+        assert!(check_origin(&handshake(None, Some("127.0.0.1:3198"))).is_ok());
+        assert!(check_origin(&handshake(None, None)).is_ok());
+    }
+
+    #[test]
+    fn origin_matching_host_is_allowed() {
+        for (origin, host) in [
+            ("http://127.0.0.1:3198", "127.0.0.1:3198"),
+            ("https://example.com", "example.com"),
+            ("https://example.com:443", "example.com"),
+            ("http://example.com", "example.com:80"),
+            ("http://[::1]:3198", "[::1]:3198"),
+            ("http://Example.COM:3198", "example.com:3198"),
+        ] {
+            assert!(
+                check_origin(&handshake(Some(origin), Some(host))).is_ok(),
+                "{origin} vs {host} 应当通过"
+            );
+        }
+    }
+
+    #[test]
+    fn origin_mismatch_is_rejected() {
+        for (origin, host) in [
+            ("https://evil.example", "md.example"),
+            ("http://127.0.0.1:3000", "127.0.0.1:3198"),
+            ("https://example.com", "example.com:3000"),
+            ("null", "example.com"),
+            ("http://example.com:8080", "example.com"),
+        ] {
+            let err = check_origin(&handshake(Some(origin), Some(host)))
+                .expect_err("跨站 Origin 必须被拒绝");
+            assert!(
+                format!("{err:?}").contains("forbidden_origin"),
+                "{origin} vs {host} 的错误码应为 forbidden_origin"
+            );
+        }
+        // Host 缺失时不能证明同源，同样拒绝。
+        assert!(check_origin(&handshake(Some("http://example.com"), None)).is_err());
+    }
+
+    #[test]
+    fn split_authority_normalises_ports() {
+        assert_eq!(
+            split_authority("example.com", 443),
+            Some(("example.com".to_string(), 443))
+        );
+        assert_eq!(
+            split_authority("example.com:8080", 443),
+            Some(("example.com".to_string(), 8080))
+        );
+        assert_eq!(
+            split_authority("[::1]", 80),
+            Some(("[::1]".to_string(), 80))
+        );
+        assert_eq!(split_authority("", 80), None);
+    }
+}

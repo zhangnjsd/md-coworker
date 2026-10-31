@@ -294,7 +294,9 @@ export class FileTree {
 
   #revealCurrent() {
     if (!this.currentPath) return
-    const row = this.host.querySelector(`.tree-row[data-path="${this.currentPath.replace(/"/g, '\\"')}"]`)
+    // Never interpolate a workspace path into a CSS selector: paths may contain
+    // quotes, backslashes or brackets and querySelector() would throw on them.
+    const row = this.#rows().find((item) => item.dataset.path === this.currentPath)
     if (row && typeof row.scrollIntoView === 'function') {
       row.scrollIntoView({ block: 'nearest' })
     }

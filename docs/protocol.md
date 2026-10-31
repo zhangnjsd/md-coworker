@@ -141,7 +141,7 @@
 
 ## 7. 其他
 
-- `GET /api/health` → `200 {"ok":true,"name":"md-coworker","version":"0.1.0","database":"ok"}`
+- `GET /api/health` → `200 {"ok":true,"name":"md-coworker","version":"0.1.1","database":"ok"}`
   （PostgreSQL 不可用时返回 `503` 且 `ok:false`、`database:"unavailable"`）
 - 时间戳统一为毫秒整数（`mtime`, `ts`）或 RFC3339 字符串（`created_at`）。
 - 所有 mutating 请求要求 `Content-Type: application/json`。
@@ -216,3 +216,50 @@
 
 预览渲染时把**相对路径的图片**改写为 `/api/raw?path=<按当前文档所在目录解析后编码>`，
 `http(s)://`、`data:`、已有 `/api/` 前缀的地址保持不变，这样 `![](assets/x.png)` 能直接显示。
+
+## 10. 安全加固契约（v1.3 / 服务端 0.1.1）
+
+本节是 0.1.1 起生效的**行为收紧**，前端必须按此实现；未列出的接口保持不变。
+
+### 10.1 新增与变更的错误码
+
+| code | 状态 | 含义 |
+| --- | --- | --- |
+| `rate_limited` | 429 | 认证类接口触发限流，响应带 `Retry-After`（秒） |
+| `forbidden_origin` | 403 | `/ws` 的 `Origin` 与 `Host` 不一致（跨站 WebSocket 劫持防护） |
+| `too_large` | 413 | 读取或上传的内容超过上限 |
+
+**隐藏路径**：任一路径组件以 `.` 开头（`.env`、`.git/config`、`data/bootstrap-admin.key` 等）
+一律 `400 bad_path`，不再"隐藏但可读"。
+
+### 10.2 认证
+
+- `POST /api/auth/challenge`、`/api/auth/login`、`/api/auth/mfa` 受令牌桶限流：
+  同一用户名每 60 秒最多 10 次失败尝试，`/challenge` 全局每分钟 60 次；超限 `429 rate_limited`。
+- `mfa_tickets` 记录失败次数：**同一张 ticket 连续 5 次 TOTP 错误即作废**，必须重新用私钥登录；
+  响应仍是 `400 bad_totp`（不新增码，避免暴露计数）。
+- 会话令牌入库前先做 SHA-256，库中不再有明文令牌。
+- Cookie 在 HTTPS 场景（`X-Forwarded-Proto: https`）或启动时带 `--secure-cookies` 会加 `Secure`；
+  其余字段不变（`HttpOnly; SameSite=Lax`）。
+
+### 10.3 账号自服务
+
+- `POST /api/me/keypair` 请求体 `{"totp": "123456"}`（可缺省为 `null`）：
+  启用 2FA 的账号必须提供有效 TOTP，缺失 → `400 mfa_required`，错误 → `400 bad_totp`。
+- 重置成功后**吊销该用户除当前会话外的全部会话**（当前会话继续有效，避免把自己踢下线）。
+
+### 10.4 文件与上传
+
+- `GET /api/files` 不再返回 `root` 字段（不再泄露服务端绝对路径）。
+- 路径解析做 `canonicalize` 前缀校验，符号链接不能逃出工作区；文件树跳过符号链接、
+  深度上限 12、条目上限 5000。
+- `GET /api/file`、`GET /api/raw` 对超过 **100 MiB** 的单个文件返回 `413 too_large`。
+- 上传被中断（客户端断开）不再残留 `.mc-upload-*` 临时文件。
+- 启动时若 `--data` 目录位于工作区内，直接拒绝启动并提示改用工作区外的 `--data`。
+
+### 10.5 协作
+
+- `/ws` 在握手时校验 `Origin` 的 host（含端口）与 `Host` 一致，不一致回 `403 forbidden_origin`；
+  无 `Origin` 的非浏览器客户端（脚本/测试）照旧放行。
+- 房间成员计数改为原子增减，断开不再可能留下永久 `file_busy`；
+  重命名/删除期间对路径加写锁，期间的 `join` 得到 `409 file_busy`。
