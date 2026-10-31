@@ -33,7 +33,7 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
   cargo run --release -- ./demo-workspace --bind 127.0.0.1:3000
 ```
 
-需要一个可用的 PostgreSQL（开发时用 18，14+ 均可）。仓库不内置数据库进程：
+需要 1 个可用的 PostgreSQL。仓库不内置数据库：
 `just db-up` 会用 `PG_BIN`（默认 `/usr/lib/postgresql/18/bin`）在 `data/pg` 建一个
 **只监听 127.0.0.1:5433、trust 认证、仅供本项目使用**的独立集群；
 连自己的数据库只要设 `DATABASE_URL` 或传 `--database-url`，表结构会在启动时自动创建。
@@ -58,7 +58,7 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 
 ## 账号与登录
 
-- **没有密码**。登录是 Ed25519 挑战签名：服务端下发随机 nonce，客户端用私钥签名，服务端用公钥验签。
+- **没有密码**。登录是 Ed25519 签名：服务端下发随机 nonce，客户端用私钥签名，服务端用公钥验签。
 - 私钥是 32 字节种子（base64），只存在于用户手里；服务端只保存公钥。
 - 管理员在「用户管理」里创建用户，创建成功后私钥**只显示一次**（可下载 `.key` 文件）。
 - 任何用户都可以在设置里**重新生成密钥对**，旧私钥立即失效。
@@ -72,18 +72,13 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 | `.md` / `.markdown` | CodeMirror 6 + y-codemirror | 左编辑、右预览，预览支持 **KaTeX 公式**、**Mermaid 图表**、代码高亮，HTML 经 DOMPurify 过滤 |
 | 其它文本文件 | Monaco（`vs-dark`）+ y-monaco | 即 VSCode 的开源编辑器内核；只在桌面端加载，按需动态引入 |
 
-取舍：没有引入完整 VS Code 工作台（`code-server` 需要 Node 服务端与更重的资源占用），
-而是用 VSCode 的编辑器内核 Monaco 承担代码编辑，Markdown 用更轻的 CodeMirror 6，
-两者都接同一个 Yjs 文档，从而共享同一套协作/保存链路。仅适配桌面端（≥1024px）。
-
 ## 文件上传
 
-- 三种入口：拖拽文件到窗口任意位置、文件树右上角的上传按钮、`Mod+Shift+U`。目标目录取当前选中的
+- 3 种入口：拖拽文件到窗口任意位置、文件树右上角的上传按钮、`Mod+Shift+U`。目标目录取当前选中的
   文件所在目录（选中目录则用它自己，没有选中就是工作区根）。
-- 上传按块流式写入临时文件，超过上限立刻中断并删除临时文件，**不会留下半个文件**；写入完成后
-  才原子 `rename` 到位。同名文件默认报 `409`，确认后可以覆盖。
+- 上传按块流式写入临时文件，超过上限立刻中断并删除临时文件，**不会留下半个文件**。同名文件默认报 `409`，确认后可以覆盖。
 - 上限由管理员在「用户管理 → 上传限制」里设置，存于 PostgreSQL 的 `settings.max_upload_bytes`，
-  默认 10 MiB，范围 1 KiB–512 MiB；普通用户通过 `GET /api/settings` 读取同一个值，前端上传前先自检。
+  默认 10 MiB，范围 1 KiB–512 MiB；普通用户通过 `GET /api/settings` 读取同 1 个值，前端上传前先自检。
 - 支持的附件不限于图片：`/api/raw` 按扩展名（必要时按魔数）返回正确的 `Content-Type`，
   未知类型按 `application/octet-stream` + `attachment` 下发；SVG 额外加 `sandbox` CSP，防止内联脚本。
 - Markdown 里的相对图片路径（`![](assets/x.png)`）在预览时会被改写成 `/api/raw?path=…`，
@@ -102,28 +97,28 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 
 ## 安全说明
 
-- 路径参数一律按工作区根目录解析，拒绝 `..`、绝对路径与符号链接逃逸。
-- 参与协作的文件在有人编辑时禁止重命名 / 删除（返回 `409 file_busy`），避免文档与磁盘错位。
+- 路径参数 1 律按工作区根目录解析，拒绝 `..`、绝对路径与符号链接逃逸（解析结果会做
+  `canonicalize` 前缀校验）；任何以 `.` 开头的路径组件（`.env`、`.git/config`、`.data/...`） 1 律 `400 bad_path`，隐藏文件不再"隐藏但可读"。
+- `--data`（主密钥与 CRDT 快照）必须放在工作区之外，否则拒绝启动；该目录在 Unix 上权限为 `0700`。
+- 参与协作的文件在有人编辑时禁止重命名 / 删除（返回 `409 file_busy`），避免文档与磁盘错位；
+  重命名/删除执行期间对路径加写锁，期间的 `join` 同样得到 `409 file_busy`。
 - 2FA 种子、CRDT 快照等在磁盘/数据库里都是密文；主密钥 `data/master.key` 权限 0600。
-- 上传只接受文件名最后一段（`/`、`\` 之后的部分），拒绝空名、`.`、`..`、以 `.` 开头的隐藏名与超长名；
+- 上传只接受文件名最后 1 段（`/`、`\` 之后的部分），拒绝空名、`.`、`..`、以 `.` 开头的隐藏名与超长名；
   上传大小在流式写入时按管理员设定逐块校验，超限即中断。
-- `/api/raw` 需要登录态，一律带 `X-Content-Type-Options: nosniff`；SVG 带
+- `/api/raw` 需要登录态， 1 律带 `X-Content-Type-Options: nosniff`；SVG 带
   `Content-Security-Policy: …; sandbox`，不会以本站身份执行脚本。
 - 会话令牌在数据库里也只存 SHA-256；`sessions` / `challenges` / `mfa_tickets` 都带过期时间，
   过期即失效并由后台任务回收。
-
-### 关于「AES 512」
-
-AES 分组长度固定 128 bit，标准中也不存在 512 位密钥的 AES。本项目按需求把「AES 512」落地为
-**512 bit（64 字节）主密钥 + HKDF-SHA512 密钥派生 + AES-256-GCM 加密**：
-
-```
-master.key (64B / 512bit, 128 hex 字符)
-   └─ HKDF-SHA512(info="md-coworker:v1") ─▶ 32B 数据密钥 ─▶ AES-256-GCM（96bit nonce，128bit tag）
-```
-
-也就是说，密钥材料的强度是 512 bit，实际分组算法是 AEAD 的 AES-256-GCM（提供机密性 + 完整性）。
-这是标准允许的、且更安全的组合；如需换成 AES-256-CBC 或加倍密钥长度，只需改 `src/crypto.rs`。
+- 登录 / 2FA 接口有令牌桶限流（同 1 用户名 60 秒内 10 次失败上限，`/challenge` 全局每分钟 60 次），
+  超限返回 `429 rate_limited` 并带 `Retry-After`；同一张 2FA 票据连续输错 5 次即作废。
+- 自助重置密钥时，启用 2FA 的账号必须提供当前验证码，成功后除当前会话外的所有会话立即失效。
+- 页面统 1 带 `Content-Security-Policy`（无第 3 方脚本、无 `eval`、禁止被外站 iframe），
+  `/ws` 握手校验 `Origin` 与 `Host` 一致（跨站 WebSocket 劫持防护）。
+- 单文件读取上限 100 MiB，超出返回 `413 too_large`；文件树跳过符号链接并限制深度与条目数。
+- **传输层不在本程序内**：默认监听 `0.0.0.0`（`BIND`）只方便局域网访问，服务只依赖 HTTP。
+  对外暴露时请放在 TLS 反向代理之后，并加 `--secure-cookies`（或让代理发
+  `X-Forwarded-Proto: https`）使会话 Cookie 带上 `Secure`；局域网内可用 `just port-proxy`
+  打印 WSL → Windows 的端口转发命令。
 
 ### 数据存储
 
@@ -152,17 +147,6 @@ master.key (64B / 512bit, 128 hex 字符)
 | 拖拽上传 | 管理后台（含上传上限） |
 | --- | --- |
 | ![上传](docs/screenshots/upload.png) | ![后台](docs/screenshots/admin.png) |
-
-## 设计
-
-界面方向叫 **Ink & Signal**：文档是主角，其余都是脚手架；协作用同一套 presence 圆点表达（顶栏、文件树、协作者栏、编辑器光标同色）；技术感来自等宽元信息排版，而不是装饰。
-
-- **字体**：正文/UI 用 **Geist**，标题与品牌用 **Space Grotesk**，代码与元信息用 **Geist Mono**（三者都随前端本地打包，无外部 CDN；中文回退到 PingFang / 思源黑体）。
-- **颜色**：全部用 **OKLCH** 定义在 `web/src/styles/tokens.css`，中性色带蓝调（墨蓝 slate，不用纯黑/纯灰），唯一强调色是青玉 `oklch(0.82 0.12 172)`。源码画布比面板深一档、预览画布比面板亮一档，读者的视线自然落到渲染后的文档上。
-- **动效**：`cubic-bezier(0.16, 1, 0.3, 1)`，微交互 120–180ms、弹层 320ms，并尊重 `prefers-reduced-motion`。
-- **可访问性**：全键盘可达，focus 永久可见（2px 强调色 ring），加载用 skeleton 而不是转圈，错误文案给出下一步。
-
-完整规范（色表、间距、组件、文案、文件归属与验收清单）在 [`docs/design.md`](docs/design.md)；样式按 `tokens / controls / shell / prose / views / overlays` 六个模块拆分在 `web/src/styles/`。
 
 ## 项目结构
 
@@ -194,7 +178,6 @@ docs/design.md   前端视觉/交互规范
 just test        # 单元测试：HKDF / AES / Ed25519 / base32 / TOTP
 just smoke       # 端到端接口 + WebSocket：登录、文件、双客户端协作、presence、2FA、密钥轮换
 just browser     # 真浏览器（Chromium）双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
-# smoke 里还包含上传相关断言：类型/大小、同名 409、覆盖、越界 413、临时文件不残留、上限增删
 ```
 
 `smoke` / `browser` 需要服务已在 `BIND`（默认 `127.0.0.1:3000`）上运行，
@@ -214,11 +197,11 @@ just test        # cargo test
 just smoke       # 接口冒烟测试
 just browser     # 真浏览器测试
 just shots       # 重新生成 docs/screenshots
-just fmt         # cargo fmt + prettier
+just fmt         # cargo fmt
 just db-up       # 启动本地 PostgreSQL 集群（幂等，缺库时自动 createdb）
 just db-down     # 停止本地集群
-just db-status   # 看表和用户数
-just db-psql     # 连进去手动查
+just db-status   # 查询表和用户数量
+just db-psql     # 手动查表
 just db-reset    # 丢掉本地集群重建（清空所有用户）
 just clean       # 停库 + cargo clean + 删除 web/dist 与 data
 ```
@@ -226,7 +209,7 @@ just clean       # 停库 + cargo clean + 删除 web/dist 与 data
 ## 前端体积取舍
 
 首屏只加载入口 chunk（约 1.3MB，gzip 450KB）；Monaco（3.3MB）只有在打开非 Markdown 文件时
-才动态 `import()`，Mermaid（约 2.7MB）只有在文档里出现 ```mermaid 代码块时才加载。
+才动态 `import()`，Mermaid（约 2.7MB）只有在文档里出现 mermaid 代码块时才加载。
 `vite.config.js` 里关掉了 `modulePreload`（否则 Vite 会替懒加载 chunk 生成 preload，
 浏览器首屏就把它们拉下来），也不再手写 `manualChunks`（手工拆 chunk 容易和懒加载边界
 形成循环 chunk 引用，运行时报 `Cannot access 'X' before initialization`）。
