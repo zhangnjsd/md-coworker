@@ -2,7 +2,7 @@
 set shell := ["bash", "-uc"]
 
 workspace := env("WORKSPACE", "./demo-workspace")
-bind      := env("BIND", "127.0.0.1:3000")
+bind      := env("BIND", "0.0.0.0:8001")
 
 # PostgreSQL: a project-local cluster keeps the demo self-contained. Point
 # DATABASE_URL at your own server to skip all of the db-* recipes.
@@ -13,8 +13,24 @@ pg_user := env("PG_USER", "md_coworker")
 pg_db   := env("PG_DB", "md_coworker")
 db_url  := env("DATABASE_URL", "postgres://md_coworker@127.0.0.1:5433/md_coworker")
 
+# Reachability helpers: the WSL NAT address changes on every restart, so these
+# are computed instead of hard-coded.
+port   := `echo "${BIND:-0.0.0.0:8001}" | cut -d: -f2`
+wsl_ip := `hostname -I | awk '{print $1}'`
+
 # bun often lives in ~/.bun/bin without being on PATH.
 bun := `command -v bun || echo "$HOME/.bun/bin/bun"`
+
+# Print the Windows commands that put this server on the LAN (run them in an
+# elevated PowerShell, then rerun this recipe whenever WSL gets a new address)
+port-proxy:
+    @echo "netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport={{port}} connectaddress={{wsl_ip}} connectport={{port}}"
+    @echo "netsh advfirewall firewall add rule name='md-coworker {{port}}' dir=in action=allow protocol=TCP localport={{port}}"
+
+# Undo the two rules above
+port-proxy-remove:
+    @echo "netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport={{port}}"
+    @echo "netsh advfirewall firewall delete rule name='md-coworker {{port}}'"
 
 # Default: list every recipe
 default:
