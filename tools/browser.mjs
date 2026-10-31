@@ -200,6 +200,78 @@ async function main() {
   check('上传/静态图片真的加载出来了', !!image && image.width > 0 && image.height > 0, JSON.stringify(image));
   await pageA.screenshot({ path: '/tmp/shot-editor.png' });
 
+  console.log('\n=== 2b. 滚动同步 ===');
+  const scrollState = () =>
+    pageA.evaluate(() => {
+      const scroller = document.querySelector('.cm-scroller');
+      const previewHost = document.querySelector('.preview-host');
+      // Top visible source line, read from the line-number gutter.
+      const box = scroller.getBoundingClientRect();
+      const gutter = [...document.querySelectorAll('.cm-lineNumbers .cm-gutterElement')]
+        .map((el) => ({ top: el.getBoundingClientRect().top, n: Number(el.textContent) }))
+        .filter((entry) => Number.isFinite(entry.n) && entry.top >= box.top - 2)
+        .sort((a, b) => a.top - b.top)[0];
+      const hostTop = previewHost.getBoundingClientRect().top;
+      const topAnchors = [...previewHost.querySelectorAll('[data-line]')]
+        .map((el) => ({
+          top: el.getBoundingClientRect().top - hostTop,
+          line: Number(el.getAttribute('data-line')),
+        }))
+        .sort((a, b) => a.top - b.top);
+      const visible = topAnchors.filter((entry) => entry.top <= 2);
+      const topAnchor = visible[visible.length - 1];
+      const nextAnchor = topAnchors.find((entry) => entry.top > 2);
+      return {
+        editor: scroller.scrollTop,
+        editorMax: scroller.scrollHeight - scroller.clientHeight,
+        editorLine: gutter ? gutter.n : 0,
+        preview: previewHost.scrollTop,
+        previewMax: previewHost.scrollHeight - previewHost.clientHeight,
+        previewLine: topAnchor ? topAnchor.line : 0,
+        previewNextLine: nextAnchor ? nextAnchor.line : 0,
+      };
+    });
+
+  await pageA.evaluate(() => {
+    const scroller = document.querySelector('.cm-scroller');
+    scroller.scrollTop = (scroller.scrollHeight - scroller.clientHeight) * 0.55;
+  });
+  await sleep(600);
+  const scrolled = await scrollState();
+  check(
+    '编辑器滚动后预览跟着走',
+    scrolled.preview > scrolled.previewMax * 0.25,
+    `preview ${scrolled.preview}/${scrolled.previewMax}`,
+  );
+  check(
+    '两侧顶部对准同一处正文',
+    !!scrolled.editorLine &&
+      scrolled.editorLine >= scrolled.previewLine - 1 &&
+      (!scrolled.previewNextLine || scrolled.editorLine <= scrolled.previewNextLine + 1),
+    `编辑器顶行 ${scrolled.editorLine}，预览顶块 ${scrolled.previewLine}–${scrolled.previewNextLine}`,
+  );
+
+  await pageA.click('.cm-content');
+  await pageA.keyboard.type('\nscroll-sync-check\n', { delay: 15 });
+  await sleep(900);
+  const afterTyping = await scrollState();
+  check(
+    '打字时编辑区不跳',
+    Math.abs(afterTyping.editor - scrolled.editor) < 60,
+    `${scrolled.editor} → ${afterTyping.editor}`,
+  );
+  check(
+    '打字时预览不跳',
+    Math.abs(afterTyping.preview - scrolled.preview) < 80,
+    `${scrolled.preview} → ${afterTyping.preview}`,
+  );
+  await pageA.keyboard.down('Control');
+  await pageA.keyboard.press('KeyZ');
+  await pageA.keyboard.up('Control');
+  await sleep(600);
+  const leftover = await pageA.evaluate(() => document.querySelector('.cm-content').innerText.includes('scroll-sync-check'));
+  check('滚动同步测试的临时输入已撤回', !leftover);
+
   console.log('\n=== 3. 第二个用户（页面 B）加入同一文件 ===');
   const pageB = await ctxB.newPage();
   await login(pageB, bobName, bobUser.private_key);
