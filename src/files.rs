@@ -57,7 +57,7 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
                 if name.to_string_lossy().starts_with('.') {
                     return Err(AppError::bad_request(
                         "bad_path",
-                        format!("隐藏路径不可访问（路径组件不能以 . 开头）: {rel}"),
+                        format!("隐藏路径不可访问: {rel}"),
                     ));
                 }
             }
@@ -91,7 +91,7 @@ fn ensure_within(root: &Path, joined: &Path, rel: &str) -> Result<(), AppError> 
     } else {
         Err(AppError::bad_request(
             "bad_path",
-            format!("路径超出了工作区范围（符号链接不可逃逸）: {rel}"),
+            format!("路径超出了工作区范围: {rel}"),
         ))
     }
 }

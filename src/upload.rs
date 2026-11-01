@@ -218,7 +218,7 @@ fn sanitize_filename(raw: &str) -> Result<String, AppError> {
     if name.starts_with('.') {
         return Err(AppError::bad_request(
             "bad_filename",
-            "文件名不能以 . 开头（隐藏文件不会出现在文件树里）",
+            "文件名不能以 . 开头",
         ));
     }
     if name.contains('\0') || name.contains('/') || name.contains('\\') {
@@ -331,7 +331,7 @@ pub async fn upload(
     if seen == 0 {
         return Err(AppError::bad_request(
             "no_files",
-            "请求里没有文件（表单字段名应为 file）",
+            "请求里没有文件",
         ));
     }
 

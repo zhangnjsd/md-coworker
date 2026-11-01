@@ -24,12 +24,10 @@ md-coworker
     --bind <ADDR>           监听地址，默认 127.0.0.1:3000
     --database-url <URL>    PostgreSQL 连接串，默认读环境变量 DATABASE_URL，
                             再回退到 postgres://md_coworker@127.0.0.1:5433/md_coworker
-    --data <DIR>            数据目录（CRDT 快照 / 主密钥），默认 ./data；
-                            必须位于工作区之外
+    --data <DIR>            数据目录，必须位于工作区之外（默认 ./data）
     --static <DIR>          前端构建产物目录，默认 ./web/dist
     --session-ttl <秒>      会话有效期，默认 604800（7 天）
-    --secure-cookies        即使没有 TLS 终止代理，也强制给会话 Cookie 加 Secure
-                            （用于直接反代到 HTTPS 的部署；等价于环境变量 SECURE_COOKIES=1）
+    --secure-cookies        即使没有 TLS 终止代理，也强制给会话 Cookie 添加 Secure
     -h, --help              显示本帮助
 ";
 
@@ -200,7 +198,7 @@ fn load_or_create_master_key(data_dir: &Path) -> Result<Vec<u8>> {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("读取主密钥失败: {}", path.display()))?;
         let bytes = hex_decode(raw.trim())
-            .with_context(|| format!("主密钥格式非法（应为 128 位 hex）: {}", path.display()))?;
+            .with_context(|| format!("主密钥格式非法: {}", path.display()))?;
         if bytes.len() != 64 {
             bail!("主密钥长度应为 64 字节，实际 {} 字节", bytes.len());
         }

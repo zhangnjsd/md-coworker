@@ -34,11 +34,17 @@
 
 /* ---------------------------------------------------------------- the stage */
 
-/* Off-screen but laid out: html2canvas needs real boxes, not display:none. */
+/* Laid out, not hidden: html2canvas needs real boxes.
+ *
+ * It sits at the top-left corner, behind the workspace. Pushing it off-screen
+ * with a negative offset looks safer, but html2canvas clamps the capture to the
+ * window rectangle, so the paper lost a slice on its left and the page came out
+ * shifted sideways with its right edge cut. At (0, 0) the capture rectangle and
+ * the paper coincide, and the app's own surface hides it from the reader. */
 .pdf-stage {
   position: fixed;
   top: 0;
-  left: -20000px;
+  left: 0;
   width: 794px;
   padding: 0;
   margin: 0;

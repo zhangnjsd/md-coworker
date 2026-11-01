@@ -446,7 +446,7 @@ export function mountApp(host, opts) {
       class: "chip-toggle chip-action",
       attrs: {
         type: "button",
-        title: "把当前 Markdown 导出为 PDF（本地生成，不上传）",
+        title: "把当前 Markdown 导出为 PDF",
       },
       on: { click: () => exportCurrentPdf() },
     },
@@ -724,7 +724,7 @@ export function mountApp(host, opts) {
 
   function renderSyncToggle() {
     syncToggle.classList.toggle("is-on", scrollSyncOn);
-    syncToggle.textContent = scrollSyncOn ? "滚动同步" : "同步已关";
+    syncToggle.textContent = scrollSyncOn ? "滚动同步" : "同步关闭";
   }
   renderSyncToggle();
 
@@ -2121,7 +2121,7 @@ export function mountApp(host, opts) {
     const ok = await confirmDialog({
       title: "退出登录",
       message:
-        "确定要退出当前账号吗？未同步的本地改动将丢失（正常情况下服务端已实时保存）。",
+        "确定要退出当前账号吗？未同步的本地改动将丢失。",
       confirmLabel: "退出登录",
       danger: true,
     });

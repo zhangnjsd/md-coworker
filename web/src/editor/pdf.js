@@ -268,7 +268,7 @@ const MAX_PAPER_HEIGHT_PX = Math.floor(
  */
 function tooLongMessage(paperHeight) {
   const pages = Math.max(1, Math.ceil(paperHeight / PAPER_PAGE_PX));
-  return `文档太长了（约 ${pages} 页），一次性导出会让浏览器卡住。请拆分文件后再导出。`;
+  return `文档太长了（约 ${pages} 页）。请拆分文件后再导出。`;
 }
 
 /**
@@ -346,12 +346,19 @@ export async function exportMarkdownPdf(opts) {
         useCORS: true,
         allowTaint: false,
         logging: false,
+        // Photograph the paper and nothing else. html2canvas measures the
+        // element in a clone whose viewport defaults to the browser window, and
+        // clamps the capture to it, so a page wider than the pane or a body with
+        // its own margin shifts the result sideways. Pin every dimension to the
+        // stage that pdf.css lays out at the origin.
+        x: 0,
+        y: 0,
+        width: PAPER_WIDTH_PX,
+        height: paperHeight,
+        windowWidth: PAPER_WIDTH_PX,
+        windowHeight: paperHeight,
         scrollX: 0,
         scrollY: 0,
-        windowWidth: Math.max(
-          document.documentElement.clientWidth,
-          PAPER_WIDTH_PX,
-        ),
         // html2canvas hands every colour it meets to its own small parser,
         // which knows only hex/rgb()/rgba()/hsl()/named colours — while this
         // design system is written in oklch() and mixes with color-mix().

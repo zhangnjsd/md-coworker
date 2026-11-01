@@ -242,7 +242,7 @@ async function main() {
     };
   });
   check(
-    "预览把相对图片改写到 /api/raw（或给出缺失提示）",
+    "预览把相对图片改写到 /api/raw 或给出缺失提示",
     (imageState.src.startsWith("/api/raw?path=") &&
       !imageState.src.includes("..")) ||
       /图片无法加载/.test(imageState.missing),
@@ -739,7 +739,7 @@ async function main() {
     JSON.stringify(intoDir),
   );
   check(
-    "内部拖拽只带 text/plain（不会触发上传遮罩）",
+    "内部拖拽只带 text/plain",
     intoDir.ok &&
       intoDir.types.length === 1 &&
       intoDir.types[0] === "text/plain",

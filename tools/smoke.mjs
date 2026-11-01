@@ -955,7 +955,7 @@ async function main() {
     code: totpCode(secSecret),
   });
   check(
-    "连续 5 次错误后票据作废（正确验证码也不再通过）",
+    "连续 5 次错误后票据作废",
     afterLock.status !== 200 && afterLock.data?.status !== "ok",
     JSON.stringify(afterLock.data),
   );

@@ -66,7 +66,7 @@ export function mountLogin(host, opts) {
       id: "login-key",
       name: "private-key",
       rows: "2",
-      placeholder: "粘贴 base64 私钥（44 字符），或把 .key 文件拖到下方",
+      placeholder: "粘贴 base64 私钥，或把 .key 文件拖到下方",
       spellcheck: "false",
       autocomplete: "off",
     },
@@ -180,7 +180,7 @@ export function mountLogin(host, opts) {
       return;
     }
     if (!rawKey) {
-      showError("请粘贴私钥（44 字符 base64），或选择 .key 文件");
+      showError("请粘贴私钥，或选择 .key 文件");
       keyInput.focus();
       return;
     }

@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     if !cfg.static_dir.join("index.html").exists() {
         tracing::warn!(
             dir = %cfg.static_dir.display(),
-            "未找到前端构建产物（web/dist/index.html），页面将返回 404；请先执行 `cd web && npm install && npm run build`"
+            "未找到前端构建产物"
         );
     }
 

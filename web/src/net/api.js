@@ -12,11 +12,11 @@ const CODE_MESSAGES = {
   not_found: "资源不存在",
   file_exists: "同名文件或目录已存在",
   unsupported_media: "该文件不是 UTF-8 文本，无法在编辑器中打开",
-  invalid_path: "路径不合法（不允许绝对路径或 ..）",
+  invalid_path: "路径不合法",
   bad_request: "请求参数不正确",
   internal: "服务端内部错误",
   network_error: "无法连接服务端，请确认后端已启动",
-  bad_path: "路径不合法（不允许绝对路径或 ..）",
+  bad_path: "路径不合法",
   bad_filename: "文件名不合法",
   // docs/protocol.md §10.1: 413 covers both reads over 100 MiB and uploads over
   // the admin limit, so the copy must not name only one of them.
@@ -26,7 +26,7 @@ const CODE_MESSAGES = {
   too_many_files: "一次最多上传 20 个文件",
   // --- v1.3 hardening (§10.1) ---
   rate_limited: "尝试过于频繁，请稍后再试",
-  forbidden_origin: "请求来源不被允许（跨站访问已被拒绝）",
+  forbidden_origin: "请求来源不被允许",
   mfa_required: "需要输入当前的 6 位验证码",
 };
 
