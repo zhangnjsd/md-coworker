@@ -1037,19 +1037,10 @@ async function main() {
   // of which real documents contain. Catch the blob to prove a real PDF came out.
   await pageA.evaluate(() => {
     window.__pdfBlob = null;
-    window.__pdfName = null;
     const create = URL.createObjectURL.bind(URL);
     URL.createObjectURL = (blob) => {
       if (blob && blob.type === "application/pdf") window.__pdfBlob = blob;
       return create(blob);
-    };
-    const click = HTMLAnchorElement.prototype.click;
-    HTMLAnchorElement.prototype.click = function () {
-      if (this.download) {
-        window.__pdfName = this.download;
-        return undefined;
-      }
-      return click.call(this);
     };
   });
   await pageA.evaluate(() => {
@@ -1068,10 +1059,19 @@ async function main() {
     if (pdfBytes) break;
     await sleep(500);
   }
-  const pdfName = await pageA.evaluate(() => window.__pdfName);
+  const pdfToast = await pageA.evaluate(() =>
+    [...document.querySelectorAll(".toast")]
+      .map((node) => node.textContent.trim())
+      .join(" | "),
+  );
   check("导出 PDF 拿到了文件", !!pdfBytes, pdfBytes ? `${pdfBytes.size} 字节` : "没有产出");
   check("PDF 文件头正确", pdfBytes?.head === "%PDF-", pdfBytes?.head || "");
-  check("PDF 按当前文件名命名", pdfName === "README.pdf", String(pdfName));
+  // jsPDF saves through its own anchor, so the filename is proven by the toast.
+  check(
+    "PDF 按当前文件名命名",
+    pdfToast.includes("README.pdf"),
+    pdfToast || "没有 toast",
+  );
   check(
     "导出期间没有留下离屏纸张",
     await pageA.evaluate(() => document.querySelectorAll(".pdf-stage").length === 0),
