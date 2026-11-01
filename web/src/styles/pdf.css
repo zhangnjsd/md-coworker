@@ -1,0 +1,243 @@
+/* Markdown → PDF export — owned by the frontend team (see src/editor/pdf.js).
+ * Two jobs: the export chip that lives in the preview head, and the "paper" the
+ * rendered preview is cloned into before html2canvas photographs it.
+ *
+ * Every colour here is hex on purpose: html2canvas cannot parse oklch() or
+ * color-mix(), which is what tokens.css is built from. The paper re-declares the
+ * tokens prose.css consumes, so the preview markup renders once for the screen
+ * and once for paper without a second renderer. */
+
+/* ---------------------------------------------------------------- export chip */
+
+/* Same pill as .chip-toggle, minus the status dot and with a leading icon.
+ * The chip never shrinks: .pane-meta absorbs whatever the head has to give up. */
+.chip-action {
+  flex: 0 0 auto;
+  padding-left: 0.5em;
+  padding-right: 0.66em;
+  white-space: nowrap;
+}
+
+.chip-action::before {
+  display: none;
+}
+
+.chip-action svg {
+  flex: none;
+  opacity: 0.75;
+}
+
+.chip-action.is-busy {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+/* ---------------------------------------------------------------- the stage */
+
+/* Off-screen but laid out: html2canvas needs real boxes, not display:none. */
+.pdf-stage {
+  position: fixed;
+  top: 0;
+  left: -20000px;
+  width: 794px;
+  padding: 0;
+  margin: 0;
+  background: #ffffff;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- the paper */
+
+.pdf-paper {
+  /* Screen tokens, re-tinted for white paper. */
+  --bg: #ffffff;
+  --bg-1: #f6f7f9;
+  --bg-2: #eceef1;
+  --bg-3: #e2e5e9;
+  --bg-editor: #ffffff;
+  --bg-preview: #ffffff;
+  --line: #ccd1d9;
+  --line-soft: #e3e6ea;
+  --fg: #0f141a;
+  --fg-2: #262d36;
+  --fg-3: #5b6673;
+  --accent: #0b6f5f;
+  --accent-ink: #ffffff;
+  --accent-soft: #e7f3f0;
+  --accent-line: #9ccfc5;
+  --danger: #b3261e;
+  --danger-soft: #fdeceb;
+  --danger-line: #f0b7b3;
+  --warn: #8a5a00;
+  --warn-soft: #fdf4e0;
+  --warn-line: #ecd7a8;
+  --overlay: #ffffff;
+  --shadow-1: 0 1px 0 #e6e9ee;
+  --shadow-pop: 0 0 0 #ffffff;
+
+  /* The aliases from tokens.css substitute their var() at :root, so they carry
+   * the dark value already computed; they have to be re-declared here or
+   * html2canvas still meets an oklch() through them. */
+  --bg-panel: #f6f7f9;
+  --bg-raised: #eceef1;
+  --bg-hover: #e2e5e9;
+  --bg-active: #e2e5e9;
+  --border: #ccd1d9;
+  --border-soft: #e3e6ea;
+  --fg-dim: #262d36;
+  --fg-faint: #5b6673;
+  --ok: #0b6f5f;
+  --danger-ink: #ffffff;
+
+  box-sizing: border-box;
+  width: 794px;
+  padding: 40px 48px 44px;
+  background: #ffffff;
+  color: #262d36;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.72;
+}
+
+/* One column, full measure: the screen column is sized for a split pane. */
+.pdf-paper .markdown-body {
+  max-width: none;
+  margin: 0;
+}
+
+/* cqi units in prose.css resolve against the preview pane, not the paper. */
+.pdf-paper .markdown-body h1 {
+  font-size: 25px;
+  padding-bottom: 0.28em;
+}
+
+.pdf-paper .markdown-body h2 {
+  font-size: 20px;
+}
+
+.pdf-paper .markdown-body h3 {
+  font-size: 17px;
+}
+
+.pdf-paper .markdown-body h4,
+.pdf-paper .markdown-body h5,
+.pdf-paper .markdown-body h6 {
+  font-size: 15px;
+}
+
+/* Long code lines wrap instead of being clipped by the pane's scroll box. */
+.pdf-paper .markdown-body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: visible;
+}
+
+.pdf-paper .markdown-body .code-block,
+.pdf-paper .markdown-body .mermaid-block {
+  border-color: var(--line-soft);
+  background: var(--bg-1);
+}
+
+/* Screen-only affordances have no meaning on paper. */
+.pdf-paper .mermaid-hint,
+.pdf-paper .code-copy,
+.pdf-paper button {
+  display: none;
+}
+
+/* Syntax palette for paper: light-theme hex twins of prose.css's oklch set. */
+.pdf-paper .hljs-comment,
+.pdf-paper .hljs-quote {
+  color: #6b7280;
+}
+
+.pdf-paper .hljs-keyword,
+.pdf-paper .hljs-selector-tag,
+.pdf-paper .hljs-literal,
+.pdf-paper .hljs-doctag,
+.pdf-paper .hljs-name,
+.pdf-paper .hljs-strong {
+  color: #7a3eb1;
+}
+
+.pdf-paper .hljs-string,
+.pdf-paper .hljs-regexp,
+.pdf-paper .hljs-addition,
+.pdf-paper .hljs-attribute,
+.pdf-paper .hljs-meta .hljs-string {
+  color: #0a7a45;
+}
+
+.pdf-paper .hljs-number,
+.pdf-paper .hljs-symbol,
+.pdf-paper .hljs-bullet,
+.pdf-paper .hljs-link,
+.pdf-paper .hljs-template-variable,
+.pdf-paper .hljs-variable {
+  color: #a1520a;
+}
+
+.pdf-paper .hljs-title,
+.pdf-paper .hljs-section,
+.pdf-paper .hljs-title.function_,
+.pdf-paper .hljs-selector-id,
+.pdf-paper .hljs-selector-class {
+  color: #1a4fbf;
+}
+
+.pdf-paper .hljs-type,
+.pdf-paper .hljs-class .hljs-title,
+.pdf-paper .hljs-built_in,
+.pdf-paper .hljs-builtin-name,
+.pdf-paper .hljs-params {
+  color: #0b6d7d;
+}
+
+.pdf-paper .hljs-attr,
+.pdf-paper .hljs-property,
+.pdf-paper .hljs-meta,
+.pdf-paper .hljs-meta .hljs-keyword {
+  color: #157a5c;
+}
+
+.pdf-paper .hljs-deletion {
+  color: #b3261e;
+}
+
+/* ------------------------------------------------------------- page breaking */
+
+/* html2pdf honours these in `pagebreak.mode: ["css", "legacy"]`. */
+.pdf-paper h1,
+.pdf-paper h2,
+.pdf-paper h3,
+.pdf-paper h4 {
+  break-after: avoid-page;
+  page-break-after: avoid;
+}
+
+.pdf-paper pre,
+.pdf-paper .code-block,
+.pdf-paper .mermaid-block,
+.pdf-paper table,
+.pdf-paper figure,
+.pdf-paper blockquote,
+.pdf-paper img {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* A table taller than a page still has to split somewhere. */
+.pdf-paper table {
+  break-inside: auto;
+  page-break-inside: auto;
+}
+
+.pdf-paper thead {
+  display: table-header-group;
+}
+
+.pdf-paper tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}

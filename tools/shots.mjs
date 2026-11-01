@@ -146,14 +146,12 @@ await pA.evaluate(async () => {
 await sleep(400);
 await pA.screenshot({ path: `${OUT}/upload.png` });
 await pA.evaluate(() => {
-  document
-    .querySelector(".app-shell")
-    .dispatchEvent(
-      new DragEvent("dragleave", {
-        bubbles: true,
-        dataTransfer: new DataTransfer(),
-      }),
-    );
+  document.querySelector(".app-shell").dispatchEvent(
+    new DragEvent("dragleave", {
+      bubbles: true,
+      dataTransfer: new DataTransfer(),
+    }),
+  );
   window.dispatchEvent(
     new DragEvent("dragend", {
       bubbles: true,

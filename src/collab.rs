@@ -466,10 +466,10 @@ impl Hub {
             .cloned()
             .collect();
         for room in rooms {
-            if room.dirty.load(Ordering::Relaxed) {
-                if let Err(err) = self.flush_room(&room) {
-                    tracing::warn!(path = %room.path, error = %err, "定时保存失败");
-                }
+            if room.dirty.load(Ordering::Relaxed)
+                && let Err(err) = self.flush_room(&room)
+            {
+                tracing::warn!(path = %room.path, error = %err, "定时保存失败");
             }
         }
     }
@@ -790,10 +790,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user: UserRow) {
             event = events.recv() => {
                 match event {
                     Ok(msg) => {
-                        if let Some(payload) = encode_event(&msg, conn, &joined) {
-                            if out_tx.send(Message::Text(payload.into())).await.is_err() {
+                        if let Some(payload) = encode_event(&msg, conn, &joined)
+                            && out_tx.send(Message::Text(payload.into())).await.is_err() {
                                 break;
-                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -861,10 +860,10 @@ async fn handle_client_msg(
         }
         "leave" => {
             let path = files::normalize_rel(msg.path.as_deref().unwrap_or(""));
-            if joined.remove(&path) {
-                if let Some(room) = hub.room(&path) {
-                    hub.leave(&room);
-                }
+            if joined.remove(&path)
+                && let Some(room) = hub.room(&path)
+            {
+                hub.leave(&room);
             }
         }
         "update" => {

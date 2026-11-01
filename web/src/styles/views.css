@@ -253,12 +253,13 @@
   min-height: 0;
   overflow-y: auto;
   width: 100%;
-  max-width: 1280px;
   margin-inline: auto;
   /* Extra tail room so a short table never ends flush against the viewport. */
   padding: var(--sp-6) var(--sp-6) var(--sp-8);
   display: flex;
   flex-direction: column;
+  max-width: 1280px;
+  margin-inline: auto;
   gap: var(--sp-5);
 }
 
@@ -292,10 +293,10 @@
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-1);
-  overflow: hidden;
 }
 
 .admin-table-wrap {
+  height: 470px;
   overflow: auto;
 }
 

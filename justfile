@@ -125,11 +125,17 @@ browser:
 shots:
     node tools/shots.mjs docs/screenshots
 
-# Format Rust sources (the frontend is hand-formatted, no prettier configured)
+# Format Rust sources, the frontend and the test scripts
 fmt:
     cargo fmt
+    cd web && npx --yes prettier --write src index.html package.json
+    cd tools && npx --yes prettier --write *.mjs
 
 # Remove build output and local data (stops the local cluster first)
 clean: db-down
     cargo clean
     rm -rf web/dist data
+
+full-release:
+    just web
+    just release

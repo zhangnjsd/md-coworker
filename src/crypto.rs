@@ -30,7 +30,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use hmac::{Hmac, Mac};
-use rand::RngCore;
+use rand::Rng;
 use sha1::Sha1;
 use sha2::Sha512;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -42,7 +42,7 @@ type HmacSha512 = Hmac<Sha512>;
 
 /// HKDF (RFC 5869) over SHA-512, which is why the intermediate key material is 512 bit.
 fn hkdf_sha512(salt: &[u8], ikm: &[u8], info: &[u8], len: usize) -> Vec<u8> {
-    let mut extract = <HmacSha512 as Mac>::new_from_slice(salt).expect("HMAC 接受任意长度密钥");
+    let mut extract = HmacSha512::new_from_slice(salt).expect("HMAC 接受任意长度密钥");
     extract.update(ikm);
     let prk = extract.finalize().into_bytes();
 
@@ -50,7 +50,7 @@ fn hkdf_sha512(salt: &[u8], ikm: &[u8], info: &[u8], len: usize) -> Vec<u8> {
     let mut previous: Vec<u8> = Vec::new();
     let mut counter: u8 = 1;
     while okm.len() < len {
-        let mut expand = <HmacSha512 as Mac>::new_from_slice(&prk).expect("HMAC 接受任意长度密钥");
+        let mut expand = HmacSha512::new_from_slice(&prk).expect("HMAC 接受任意长度密钥");
         expand.update(&previous);
         expand.update(info);
         expand.update(&[counter]);
@@ -87,11 +87,12 @@ impl Cipher {
     /// Encrypt. Output is `12-byte nonce || ciphertext || 16-byte tag`.
     pub fn seal(&self, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
         let cipher = Aes256Gcm::new_from_slice(&self.key).context("初始化 AES-256-GCM 失败")?;
-        let mut nonce = [0u8; 12];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let mut nonce_bytes = [0u8; 12];
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::try_from(&nonce_bytes[..]).expect("nonce 长度固定为 12 字节");
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &nonce,
                 Payload {
                     msg: plaintext,
                     aad,
@@ -99,7 +100,7 @@ impl Cipher {
             )
             .map_err(|_| anyhow!("AES-256-GCM 加密失败"))?;
         let mut out = Vec::with_capacity(12 + ciphertext.len());
-        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&nonce_bytes);
         out.extend_from_slice(&ciphertext);
         Ok(out)
     }
@@ -108,10 +109,11 @@ impl Cipher {
         if blob.len() < 12 + 16 {
             bail!("密文长度非法");
         }
-        let (nonce, body) = blob.split_at(12);
+        let (nonce_bytes, body) = blob.split_at(12);
+        let nonce = Nonce::try_from(nonce_bytes).map_err(|_| anyhow!("密文 nonce 长度非法"))?;
         let cipher = Aes256Gcm::new_from_slice(&self.key).context("初始化 AES-256-GCM 失败")?;
         cipher
-            .decrypt(Nonce::from_slice(nonce), Payload { msg: body, aad })
+            .decrypt(&nonce, Payload { msg: body, aad })
             .map_err(|_| anyhow!("AES-256-GCM 解密或完整性校验失败"))
     }
 }
@@ -120,7 +122,7 @@ impl Cipher {
 
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut buf = vec![0u8; n];
-    rand::rngs::OsRng.fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     buf
 }
 
@@ -137,7 +139,7 @@ pub fn random_token() -> String {
 /// `nacl.sign.keyPair.fromSeed`.
 pub fn generate_keypair() -> (String, String) {
     let mut seed = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut seed);
+    rand::rng().fill_bytes(&mut seed);
     let signing = SigningKey::from_bytes(&seed);
     let public = signing.verifying_key();
     (B64.encode(seed), B64.encode(public.to_bytes()))
@@ -238,7 +240,7 @@ pub fn generate_totp_secret() -> String {
 
 /// RFC 6238 TOTP: SHA-1, 6 digits, 30-second steps.
 pub fn totp_code(secret: &[u8], counter: u64) -> String {
-    let mut mac = <HmacSha1 as Mac>::new_from_slice(secret).expect("HMAC 接受任意长度密钥");
+    let mut mac = HmacSha1::new_from_slice(secret).expect("HMAC 接受任意长度密钥");
     mac.update(&counter.to_be_bytes());
     let digest = mac.finalize().into_bytes();
     let offset = (digest[19] & 0x0f) as usize;

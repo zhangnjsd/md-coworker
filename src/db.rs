@@ -115,12 +115,6 @@ struct MfaTicketRecord {
     attempts: i32,
 }
 
-const USER_COLUMNS: &str =
-    "id, username, role, color, public_key, totp_secret_enc, totp_enabled, created_at";
-
-/// Same list, qualified for joins: `sessions` also has a `created_at` column.
-const USER_COLUMNS_Q: &str = "u.id, u.username, u.role, u.color, u.public_key, u.totp_secret_enc, u.totp_enabled, u.created_at";
-
 // ---------------------------------------------------------------- time
 
 pub fn now_ms() -> i64 {
@@ -244,34 +238,35 @@ impl Db {
         let id = Uuid::new_v4().to_string();
         let created_at = now_rfc3339();
         let color = self.pick_color(username).await;
-        let sql = format!(
+        sqlx::query(
             "INSERT INTO users (id, username, username_lc, role, color, public_key, \
              totp_secret_enc, totp_enabled, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, NULL, FALSE, $7)"
-        );
-        sqlx::query(&sql)
-            .bind(&id)
-            .bind(username)
-            .bind(username.to_lowercase())
-            .bind(role.as_str())
-            .bind(&color)
-            .bind(public_key)
-            .bind(&created_at)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| {
-                if is_unique_violation(&e) {
-                    anyhow!("用户名已被占用")
-                } else {
-                    anyhow::Error::new(e)
-                }
-            })?;
+             VALUES ($1, $2, $3, $4, $5, $6, NULL, FALSE, $7)",
+        )
+        .bind(&id)
+        .bind(username)
+        .bind(username.to_lowercase())
+        .bind(role.as_str())
+        .bind(&color)
+        .bind(public_key)
+        .bind(&created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            if is_unique_violation(&e) {
+                anyhow!("用户名已被占用")
+            } else {
+                anyhow::Error::new(e)
+            }
+        })?;
         self.get_user(&id).await?.context("刚创建的用户不存在")
     }
 
     pub async fn get_user(&self, id: &str) -> Result<Option<UserRow>> {
-        let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1");
-        let record = sqlx::query_as::<_, UserRecord>(&sql)
+        let record = sqlx::query_as::<_, UserRecord>(
+            "SELECT id, username, role, color, public_key, totp_secret_enc, totp_enabled, created_at \
+             FROM users WHERE id = $1",
+        )
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -279,8 +274,10 @@ impl Db {
     }
 
     pub async fn find_user_by_username(&self, username: &str) -> Result<Option<UserRow>> {
-        let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE username_lc = $1");
-        let record = sqlx::query_as::<_, UserRecord>(&sql)
+        let record = sqlx::query_as::<_, UserRecord>(
+            "SELECT id, username, role, color, public_key, totp_secret_enc, totp_enabled, created_at \
+             FROM users WHERE username_lc = $1",
+        )
             .bind(username.to_lowercase())
             .fetch_optional(&self.pool)
             .await?;
@@ -288,8 +285,10 @@ impl Db {
     }
 
     pub async fn list_users(&self) -> Result<Vec<UserRow>> {
-        let sql = format!("SELECT {USER_COLUMNS} FROM users ORDER BY username_lc ASC");
-        let records = sqlx::query_as::<_, UserRecord>(&sql)
+        let records = sqlx::query_as::<_, UserRecord>(
+            "SELECT id, username, role, color, public_key, totp_secret_enc, totp_enabled, created_at \
+             FROM users ORDER BY username_lc ASC",
+        )
             .fetch_all(&self.pool)
             .await?;
         records
@@ -365,11 +364,11 @@ impl Db {
     }
 
     pub async fn session_user(&self, token: &str) -> Result<Option<UserRow>> {
-        let sql = format!(
-            "SELECT {USER_COLUMNS_Q} FROM sessions s JOIN users u ON u.id = s.user_id
+        let record = sqlx::query_as::<_, UserRecord>(
+            "SELECT u.id, u.username, u.role, u.color, u.public_key, u.totp_secret_enc, u.totp_enabled, u.created_at
+             FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE s.token = $1 AND s.expires_at > $2"
-        );
-        let record = sqlx::query_as::<_, UserRecord>(&sql)
+        )
             .bind(hash_token(token))
             .bind(now_ms())
             .fetch_optional(&self.pool)
@@ -470,11 +469,11 @@ impl Db {
     /// ticket is kept so a wrong code can be retried, and it stops working once it
     /// expires or once the caller consumed it after too many failures.
     pub async fn mfa_ticket_user(&self, ticket: &str) -> Result<Option<MfaTicketUser>> {
-        let sql = format!(
-            "SELECT {USER_COLUMNS_Q}, t.attempts FROM mfa_tickets t JOIN users u ON u.id = t.user_id
+        let record = sqlx::query_as::<_, MfaTicketRecord>(
+            "SELECT u.id, u.username, u.role, u.color, u.public_key, u.totp_secret_enc, u.totp_enabled, u.created_at, t.attempts
+             FROM mfa_tickets t JOIN users u ON u.id = t.user_id
              WHERE t.id = $1 AND t.expires_at > $2"
-        );
-        let record = sqlx::query_as::<_, MfaTicketRecord>(&sql)
+        )
             .bind(ticket)
             .bind(now_ms())
             .fetch_optional(&self.pool)

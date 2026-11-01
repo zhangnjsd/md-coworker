@@ -2,7 +2,7 @@
 //! address and the master key.
 
 use anyhow::{Context, Result, bail};
-use rand::RngCore;
+use rand::Rng;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -202,16 +202,13 @@ fn load_or_create_master_key(data_dir: &Path) -> Result<Vec<u8>> {
         let bytes = hex_decode(raw.trim())
             .with_context(|| format!("主密钥格式非法（应为 128 位 hex）: {}", path.display()))?;
         if bytes.len() != 64 {
-            bail!(
-                "主密钥长度应为 64 字节（512 bit），实际 {} 字节",
-                bytes.len()
-            );
+            bail!("主密钥长度应为 64 字节，实际 {} 字节", bytes.len());
         }
         return Ok(bytes);
     }
 
     let mut key = vec![0u8; 64];
-    rand::rngs::OsRng.fill_bytes(&mut key);
+    rand::rng().fill_bytes(&mut key);
     std::fs::write(&path, hex_encode(&key))
         .with_context(|| format!("写入主密钥失败: {}", path.display()))?;
     #[cfg(unix)]
@@ -233,7 +230,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub fn hex_decode(text: &str) -> Result<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         bail!("hex 字符串长度必须为偶数");
     }
     let bytes = text.as_bytes();

@@ -150,12 +150,12 @@ impl IntoResponse for AppError {
             "error": { "code": self.code, "message": self.message }
         }));
         let mut response = (self.status, body).into_response();
-        if let Some(secs) = self.retry_after {
-            if let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string()) {
-                response
-                    .headers_mut()
-                    .insert(axum::http::header::RETRY_AFTER, value);
-            }
+        if let Some(secs) = self.retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
         }
         response
     }

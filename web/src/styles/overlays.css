@@ -150,7 +150,7 @@
 
 /* Left bar carries the only colour: ok / warn / danger. */
 .toast::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   bottom: 0;

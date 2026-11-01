@@ -4,10 +4,12 @@ import { CollabClient } from "../net/collab.js";
 import { FileTree } from "../ui/tree.js";
 import { confirmDialog, promptDialog } from "../ui/modal.js";
 import { toastError, toastInfo, toastSuccess, toastWarn } from "../ui/toast.js";
-import { countWords, el, fmtClock } from "../util/dom.js";
+import { countWords, el, fmtClock, svgIcon } from "../util/dom.js";
 import { createMarkdownEditor } from "../editor/markdown.js";
 import { createPreview } from "../editor/preview.js";
 import { openSettings } from "./settings.js";
+// Paper theme + export chip for the PDF export (see src/editor/pdf.js).
+import "../styles/pdf.css";
 
 // Monaco (3.4 MiB) loads lazily only for non-Markdown files; first paint uses CodeMirror only.
 function isMarkdownPath(path) {
@@ -435,6 +437,23 @@ export function mountApp(host, opts) {
     text: "滚动同步",
     on: { click: () => toggleScrollSync() },
   });
+  // Exports the rendered preview as a PDF in the browser (html2pdf.js, pulled
+  // in on demand). Markdown only — other files have nothing to paginate.
+  const pdfSpan = el("span", { text: "导出 PDF" });
+  const pdfBtn = el(
+    "button",
+    {
+      class: "chip-toggle chip-action",
+      attrs: {
+        type: "button",
+        title: "把当前 Markdown 导出为 PDF（本地生成，不上传）",
+      },
+      on: { click: () => exportCurrentPdf() },
+    },
+    svgIcon("download", 13),
+    pdfSpan,
+  );
+  pdfBtn.hidden = true;
   const previewPane = el(
     "section",
     { class: "pane pane-preview" },
@@ -444,6 +463,7 @@ export function mountApp(host, opts) {
       el("span", { class: "pane-title", text: "预览" }),
       previewMeta,
       syncToggle,
+      pdfBtn,
     ),
     el("div", { class: "pane-body" }, previewHost),
   );
@@ -713,6 +733,42 @@ export function mountApp(host, opts) {
     lsSet(LS.scrollSync, scrollSyncOn ? "1" : "0");
     renderSyncToggle();
     toastInfo(scrollSyncOn ? "已开启预览滚动同步" : "已关闭预览滚动同步");
+  }
+
+  // ---------------------------------------------------------------- pdf export
+
+  // html2pdf.js brings jsPDF and html2canvas with it (≈980 kB of chunk) that
+  // nobody needs until they press the button, so it loads on first export.
+  let pdfBusy = false;
+
+  async function exportCurrentPdf() {
+    const path = state.currentPath;
+    if (pdfBusy || !path || !isMarkdownPath(path)) return;
+    if (!previewHost.firstChild) {
+      toastInfo("预览还没有内容，稍后再试一次");
+      return;
+    }
+
+    pdfBusy = true;
+    const label = pdfSpan.textContent;
+    pdfBtn.disabled = true;
+    pdfBtn.classList.add("is-busy");
+    pdfSpan.textContent = "导出中…";
+    try {
+      const { exportMarkdownPdf, pdfFileName } =
+        await import("../editor/pdf.js");
+      const filename = pdfFileName(path);
+      await exportMarkdownPdf({ source: previewHost, filename, title: path });
+      toastSuccess(`已导出 ${filename}`);
+    } catch (err) {
+      console.error("[pdf] export failed", err);
+      toastError(err && err.message ? err.message : "导出 PDF 失败，请重试");
+    } finally {
+      pdfBusy = false;
+      pdfBtn.disabled = false;
+      pdfBtn.classList.remove("is-busy");
+      pdfSpan.textContent = label || "导出 PDF";
+    }
   }
 
   // ------------------------------------------------------------------ tree IO
@@ -1371,6 +1427,7 @@ export function mountApp(host, opts) {
     editorHost.innerHTML = "";
     editorEmpty.style.display = "";
     previewMeta.textContent = "";
+    pdfBtn.hidden = true;
     if (preview.setBasePath) preview.setBasePath("");
     preview.renderEmpty("无可预览内容", "打开一个 Markdown 文件即可实时预览");
   }
@@ -1385,6 +1442,7 @@ export function mountApp(host, opts) {
     const node = tree.findNode(path);
     const src = rawSrc(path);
     state.imagePath = path;
+    pdfBtn.hidden = true;
     imageTitle.textContent = name;
     imageTitle.title = path;
     imageMeta.textContent = "图片";
@@ -1486,6 +1544,7 @@ export function mountApp(host, opts) {
     const md = isMarkdownPath(path);
     editorEmpty.style.display = "none";
     previewMeta.textContent = md ? "gfm · 只读" : baseName(path);
+    pdfBtn.hidden = !md;
 
     try {
       if (md) {

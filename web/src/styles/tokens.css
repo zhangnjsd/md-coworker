@@ -4,12 +4,15 @@
 
 :root {
   /* ---------------------------------------------------------------- fonts */
-  --font-latin: 'Geist Variable', 'Geist';
-  --font-cjk: 'PingFang SC', 'Hiragino Sans GB', 'Source Han Sans SC',
-    'Noto Sans CJK SC', 'Microsoft YaHei';
+  --font-latin: "Geist Variable", "Geist";
+  --font-cjk:
+    "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC",
+    "Microsoft YaHei";
   --font-sans: var(--font-latin), var(--font-cjk), sans-serif;
-  --font-display: 'Space Grotesk Variable', var(--font-latin), var(--font-cjk), sans-serif;
-  --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo,
+  --font-display:
+    "Space Grotesk Variable", var(--font-latin), var(--font-cjk), sans-serif;
+  --font-mono:
+    "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo,
     Consolas, monospace;
 
   /* ------------------------------------------------------------ type scale */
@@ -123,7 +126,9 @@ body {
   font-size: var(--fs-sm);
   font-weight: 400;
   line-height: var(--lh-ui);
-  font-feature-settings: 'cv11' 1, 'ss01' 1;
+  font-feature-settings:
+    "cv11" 1,
+    "ss01" 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;

@@ -1,7 +1,7 @@
-# md-coworker
+# Markdown Coworker
 
-基于 **Axum** 的实时协作 Markdown 工作区：密钥对登录（可选 TOTP 2FA）、左侧编辑 / 右侧预览、
-可折叠文件树，以及对任意文本文件使用 Monaco（VSCode 同源编辑器）在线编辑。
+基于 **Axum** 的实时协作 Markdown 工作区：
+密钥对登录、左侧编辑 / 右侧预览、可折叠文件树，以及对任意文本文件使用 Monaco（VSCode 同源编辑器）在线编辑。
 协作部分使用 **CRDT（Yjs ⇄ yrs）**，编辑内容实时保存，**无需手动保存**，且撤销只作用于自己的编辑。
 图片、PDF、代码等附件可以直接拖进窗口上传，单文件大小上限由管理员设置。
 
@@ -38,8 +38,7 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 **只监听 127.0.0.1:5433、trust 认证、仅供本项目使用**的独立集群；
 连自己的数据库只要设 `DATABASE_URL` 或传 `--database-url`，表结构会在启动时自动创建。
 
-首次启动会自动创建 `admin` 账号，把私钥打印在终端并写入 `data/bootstrap-admin.key`
-（权限 0600）。**该私钥只出现这一次**，服务端不保存私钥，请立刻转存到密码管理器。
+首次启动会自动创建 `admin` 账号，把私钥打印在终端并写入 `data/bootstrap-admin.key`。**该私钥只出现这一次**，服务端不保存私钥，请立刻转存到密码管理器。
 
 打开 <http://127.0.0.1:3000>，用「用户名 + 私钥」登录即可。
 
@@ -58,8 +57,8 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 
 ## 账号与登录
 
-- **没有密码**。登录是 Ed25519 签名：服务端下发随机 nonce，客户端用私钥签名，服务端用公钥验签。
-- 私钥是 32 字节种子（base64），只存在于用户手里；服务端只保存公钥。
+- 登录使用 Ed25519 签名：服务端下发随机 nonce，客户端用私钥签名，服务端用公钥验签。
+- 私钥使用 32 字节种子（base64），只存在于用户手里；服务端只保存公钥。
 - 管理员在「用户管理」里创建用户，创建成功后私钥**只显示一次**（可下载 `.key` 文件）。
 - 任何用户都可以在设置里**重新生成密钥对**，旧私钥立即失效。
 - 用户可自行开启 TOTP 2FA（扫码或手输密钥），开启后登录需要「私钥签名 + 6 位动态码」两步。
@@ -86,8 +85,8 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 
 ## 协作模型
 
-- 每个文件在服务端对应一个 `yrs::Doc`（Yjs 的 Rust 实现），根 Y.Text 名为 `content`，是全量历史。
-- 客户端 `join` 一个文件 → 收到 `init`（当前状态全量更新）→ 之后互发增量更新。
+- 每个文件在服务端对应 1 个 `yrs::Doc`（Yjs 的 Rust 实现），根 Y.Text 名为 `content`，是全量历史。
+- 客户端 `join` 1 个文件 → 收到 `init`（当前状态全量更新）→ 之后互发增量更新。
 - 服务端 400ms 防抖把文档文本写回磁盘；即使进程崩溃，最多丢 400ms 的输入。
   房间没人时会立刻保存并把文档从内存回收，下次进入从加密快照恢复历史（Undo 不会因重连而错乱）。
 - **撤销**：客户端只用 `UndoManager` 跟踪本地来源的编辑（`origin === null`），远端更新带 `origin = 'remote'`，
@@ -177,15 +176,15 @@ docs/design.md   前端视觉/交互规范
 ```bash
 just test        # 单元测试：HKDF / AES / Ed25519 / base32 / TOTP
 just smoke       # 端到端接口 + WebSocket：登录、文件、双客户端协作、presence、2FA、密钥轮换
-just browser     # 真浏览器（Chromium）双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
+just browser     # Chromium 双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
 ```
 
 `smoke` / `browser` 需要服务已在 `BIND`（默认 `127.0.0.1:3000`）上运行，
 并先 `just install` 装好 `web/` 与 `tools/` 的 npm 依赖（ws / yjs / tweetnacl / puppeteer-core）。
 
-## 常用命令（Just）
+## 常用命令
 
-本项目用 [just](https://github.com/casey/just) 而不是 Make 管理任务，`just` 或 `just --list` 可看全部：
+本项目用 [just](https://github.com/casey/just) 管理任务，`just` 或 `just --list` 可看全部：
 
 ```bash
 just install     # 安装 web/ 与 tools/ 的 npm 依赖
@@ -205,11 +204,3 @@ just db-psql     # 手动查表
 just db-reset    # 丢掉本地集群重建（清空所有用户）
 just clean       # 停库 + cargo clean + 删除 web/dist 与 data
 ```
-
-## 前端体积取舍
-
-首屏只加载入口 chunk（约 1.3MB，gzip 450KB）；Monaco（3.3MB）只有在打开非 Markdown 文件时
-才动态 `import()`，Mermaid（约 2.7MB）只有在文档里出现 mermaid 代码块时才加载。
-`vite.config.js` 里关掉了 `modulePreload`（否则 Vite 会替懒加载 chunk 生成 preload，
-浏览器首屏就把它们拉下来），也不再手写 `manualChunks`（手工拆 chunk 容易和懒加载边界
-形成循环 chunk 引用，运行时报 `Cannot access 'X' before initialization`）。

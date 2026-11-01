@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 把图片、PDF、代码文件直接拖到窗口里，或者点文件树右上角的上传按钮，就会存进工作区
 （默认放到当前选中的目录）。下面是上传进 `assets/` 的示意图，用相对路径引用：
 
-![md-coworker 结构示意](assets/architecture.png)
+![md-coworker 结构示意](assets/test.png)
 
 单个文件的大小上限由管理员在“用户管理 → 上传限制”里设置，默认 10 MiB。
 
@@ -65,4 +65,6 @@ async fn main() -> anyhow::Result<()> {
 
 ### dahgasd
 
-asdd
+哈哈哈😄
+
+![ddd](assets/133687348_p0.png)
