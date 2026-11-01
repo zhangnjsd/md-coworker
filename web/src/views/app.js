@@ -2120,8 +2120,7 @@ export function mountApp(host, opts) {
   async function doLogout() {
     const ok = await confirmDialog({
       title: "退出登录",
-      message:
-        "确定要退出当前账号吗？未同步的本地改动将丢失。",
+      message: "确定要退出当前账号吗？未同步的本地改动将丢失。",
       confirmLabel: "退出登录",
       danger: true,
     });

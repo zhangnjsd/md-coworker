@@ -216,10 +216,7 @@ fn sanitize_filename(raw: &str) -> Result<String, AppError> {
         return Err(AppError::bad_request("bad_filename", "文件名不能为空"));
     }
     if name.starts_with('.') {
-        return Err(AppError::bad_request(
-            "bad_filename",
-            "文件名不能以 . 开头",
-        ));
+        return Err(AppError::bad_request("bad_filename", "文件名不能以 . 开头"));
     }
     if name.contains('\0') || name.contains('/') || name.contains('\\') {
         return Err(AppError::bad_request("bad_filename", "文件名包含非法字符"));
@@ -329,10 +326,7 @@ pub async fn upload(
     }
 
     if seen == 0 {
-        return Err(AppError::bad_request(
-            "no_files",
-            "请求里没有文件",
-        ));
+        return Err(AppError::bad_request("no_files", "请求里没有文件"));
     }
 
     let files: Vec<Value> = saved
