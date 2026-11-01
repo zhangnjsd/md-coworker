@@ -628,10 +628,6 @@ body.is-resizing .splitter {
   background: var(--bg-editor);
 }
 
-.editor-host .cm-editor {
-  height: 100%;
-}
-
 .editor-host .monaco-editor,
 .editor-host .monaco-editor .overflow-guard {
   border-radius: 0;

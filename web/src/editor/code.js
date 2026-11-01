@@ -285,7 +285,8 @@ export function createCodeEditor(opts) {
   const binding = new MonacoBinding(ytext, model, new Set([editor]), awareness);
   const painter = createCursorPainter(awareness, ytext.doc.clientID);
 
-  // y-monaco publishes `selection`; mirror it as `cursor` for CodeMirror peers.
+  // y-monaco publishes `selection`; `cursor` is what presence and the peer
+  // panel read, so both dialects are kept in the awareness state.
   let publishing = false;
   const cursorSub = editor.onDidChangeCursorSelection(() => {
     const sel = editor.getSelection();

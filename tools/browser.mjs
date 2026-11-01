@@ -2,6 +2,7 @@
 // live sync, the online-user panel and undo isolation.
 // Usage: node tools/browser.mjs [baseUrl] [bootstrapKeyFile]
 import fs from "node:fs";
+import os from "node:os";
 import crypto from "node:crypto";
 import puppeteer from "puppeteer-core";
 import nacl from "tweetnacl";
@@ -155,10 +156,17 @@ async function openFile(page, relPath) {
   if (!clicked) throw new Error(`文件树里没有 ${relPath}`);
 }
 
-const cmText = (page) =>
+// The Markdown pane is Monaco now: its DOM only holds the visible lines, so
+// assertions read the model behind it. Clicks and waits still need a selector,
+// and .view-lines is the scrollable text surface.
+const EDITOR_SEL = ".editor-host .view-lines";
+const editorText = (page) =>
   page.evaluate(() => {
-    const el = document.querySelector(".cm-content");
-    return el ? el.innerText : null;
+    const api = document.querySelector(".editor-host")?.__mcMarkdownEditor;
+    if (api?.model) return api.model.getValue();
+    return (
+      document.querySelector(".editor-host .view-lines")?.innerText ?? null
+    );
   });
 
 async function main() {
@@ -191,19 +199,20 @@ async function main() {
   await pageA.goto(`${BASE}/#/login`, { waitUntil: "networkidle2" });
   await pageA.waitForSelector(".login-submit");
   check("渲染出登录界面", !!(await pageA.$(".login-submit")));
-  await pageA.screenshot({ path: "/tmp/shot-login.png" });
+  await pageA.screenshot({ path: `${os.tmpdir()}/shot-login.png` });
   await login(pageA, "admin", adminKey);
   check("管理员登录后进入工作区", !!(await pageA.$(".app-shell")));
 
   console.log("\n=== 2. 文件树与 Markdown 编辑/预览 ===");
   await openFile(pageA, "README.md");
-  await pageA.waitForSelector(".cm-content", { timeout: 15000 });
+  await pageA.waitForSelector(EDITOR_SEL, { timeout: 30000 });
   await pageA.waitForFunction(
-    () => {
-      const el = document.querySelector(".cm-content");
-      return el && el.innerText.includes("md-coworker 示例工作区");
-    },
-    { timeout: 15000 },
+    () =>
+      document
+        .querySelector(".editor-host")
+        ?.__mcMarkdownEditor?.model?.getValue()
+        ?.includes("md-coworker 示例工作区"),
+    { timeout: 30000 },
   );
   check("Markdown 编辑窗口加载出文件内容", true);
   await pageA
@@ -248,7 +257,7 @@ async function main() {
       /图片无法加载/.test(imageState.missing),
     JSON.stringify(imageState),
   );
-  await pageA.screenshot({ path: "/tmp/shot-editor.png" });
+  await pageA.screenshot({ path: `${os.tmpdir()}/shot-editor.png` });
 
   console.log("\n=== 2b. 滚动同步 ===");
   const scratchBody = [
@@ -300,7 +309,7 @@ async function main() {
     .catch(() => false);
   check("测试文件出现在文件树里", scratchListed);
   await openFile(pageA, SCRATCH);
-  await pageA.waitForSelector(".cm-content", { timeout: 15000 });
+  await pageA.waitForSelector(EDITOR_SEL, { timeout: 30000 });
   await sleep(900);
   const loadedImage = await pageA.evaluate(async () => {
     const img = document.querySelector(".markdown-body img");
@@ -323,19 +332,13 @@ async function main() {
   );
   const scrollState = () =>
     pageA.evaluate(() => {
-      const scroller = document.querySelector(".cm-scroller");
+      // Both panes are Monaco now: its DOM keeps .monaco-scrollable-element at
+      // scrollTop 0, so the numbers come from the editor instance the pane
+      // keeps on its host element.
+      const api = document.querySelector(".editor-host")?.__mcMarkdownEditor;
+      const editor = api?.editor;
+      const view = editor?.getVisibleRanges?.()[0];
       const previewHost = document.querySelector(".preview-host");
-      // Top visible source line, read from the line-number gutter.
-      const box = scroller.getBoundingClientRect();
-      const gutter = [
-        ...document.querySelectorAll(".cm-lineNumbers .cm-gutterElement"),
-      ]
-        .map((el) => ({
-          top: el.getBoundingClientRect().top,
-          n: Number(el.textContent),
-        }))
-        .filter((entry) => Number.isFinite(entry.n) && entry.top >= box.top - 2)
-        .sort((a, b) => a.top - b.top)[0];
       const hostTop = previewHost.getBoundingClientRect().top;
       const topAnchors = [...previewHost.querySelectorAll("[data-line]")]
         .map((el) => ({
@@ -347,9 +350,14 @@ async function main() {
       const topAnchor = visible[visible.length - 1];
       const nextAnchor = topAnchors.find((entry) => entry.top > 2);
       return {
-        editor: scroller.scrollTop,
-        editorMax: scroller.scrollHeight - scroller.clientHeight,
-        editorLine: gutter ? gutter.n : 0,
+        editor: editor ? editor.getScrollTop() : 0,
+        editorMax: editor
+          ? Math.max(
+              1,
+              editor.getScrollHeight() - editor.getLayoutInfo().height,
+            )
+          : 1,
+        editorLine: view ? view.startLineNumber : 0,
         preview: previewHost.scrollTop,
         previewMax: previewHost.scrollHeight - previewHost.clientHeight,
         previewLine: topAnchor ? topAnchor.line : 0,
@@ -358,8 +366,11 @@ async function main() {
     });
 
   await pageA.evaluate(() => {
-    const scroller = document.querySelector(".cm-scroller");
-    scroller.scrollTop = (scroller.scrollHeight - scroller.clientHeight) * 0.55;
+    const editor =
+      document.querySelector(".editor-host")?.__mcMarkdownEditor?.editor;
+    if (!editor) throw new Error("markdown editor is not a Monaco instance");
+    const max = editor.getScrollHeight() - editor.getLayoutInfo().height;
+    editor.setScrollTop(max * 0.55);
   });
   await sleep(600);
   const scrolled = await scrollState();
@@ -377,7 +388,7 @@ async function main() {
     `编辑器顶行 ${scrolled.editorLine}，预览顶块 ${scrolled.previewLine}–${scrolled.previewNextLine}`,
   );
 
-  await pageA.click(".cm-content");
+  await pageA.click(EDITOR_SEL);
   await pageA.keyboard.type("\nscroll-sync-check\n", { delay: 15 });
   await sleep(900);
   const afterTyping = await scrollState();
@@ -397,8 +408,9 @@ async function main() {
   await sleep(600);
   const leftover = await pageA.evaluate(() =>
     document
-      .querySelector(".cm-content")
-      .innerText.includes("scroll-sync-check"),
+      .querySelector(".editor-host")
+      ?.__mcMarkdownEditor?.model?.getValue()
+      ?.includes("scroll-sync-check"),
   );
   check("滚动同步测试的临时输入已撤回", !leftover);
 
@@ -406,11 +418,13 @@ async function main() {
   const pageB = await ctxB.newPage();
   await login(pageB, bobName, bobUser.private_key);
   await openFile(pageB, SCRATCH);
-  await pageB.waitForSelector(".cm-content", { timeout: 15000 });
+  await pageB.waitForSelector(EDITOR_SEL, { timeout: 30000 });
   await pageB.waitForFunction(
     () => {
-      const el = document.querySelector(".cm-content");
-      return el && el.innerText.includes("协作同步测试文档");
+      const text = document
+        .querySelector(".editor-host")
+        ?.__mcMarkdownEditor?.model?.getValue();
+      return !!text && text.includes("协作同步测试文档");
     },
     { timeout: 15000 },
   );
@@ -419,22 +433,26 @@ async function main() {
   console.log("\n=== 4. 实时同步（A 输入 → B 立刻看到） ===");
   const marker = `SYNC-${suffix}`;
   await pageA.bringToFront();
-  await pageA.click(".cm-content");
+  await pageA.click(EDITOR_SEL);
   await pageA.keyboard.down("Control");
   await pageA.keyboard.press("End");
   await pageA.keyboard.up("Control");
   await pageA.keyboard.type(` ${marker}`);
-  // CodeMirror renders only the viewport, so bring B's view to the end of the
-  // document before asserting that the text arrived.
+  // Park B's caret at the end as well, so both panes are typing in the same
+  // place; the assertion itself reads the model, not the viewport.
   await pageB.bringToFront();
-  await pageB.click(".cm-content");
+  await pageB.click(EDITOR_SEL);
   await pageB.keyboard.down("Control");
   await pageB.keyboard.press("End");
   await pageB.keyboard.up("Control");
   await sleep(300);
   const synced = await pageB
     .waitForFunction(
-      (m) => document.querySelector(".cm-content")?.innerText.includes(m),
+      (m) =>
+        !!document
+          .querySelector(".editor-host")
+          ?.__mcMarkdownEditor?.model?.getValue()
+          ?.includes(m),
       { timeout: 10000 },
       marker,
     )
@@ -483,41 +501,45 @@ async function main() {
   const remoteCursor = await pageA.evaluate(
     () =>
       !!document.querySelector(
-        '.cm-ySelection, .yRemoteSelection, [class*="ySelection"]',
+        '.editor-host .yRemoteSelection, .editor-host .yRemoteSelectionHead, [class*="ySelection"]',
       ),
   );
   check("编辑区内渲染远端光标样式类", remoteCursor || true);
-  await pageB.screenshot({ path: "/tmp/shot-collab.png" });
+  await pageB.screenshot({ path: `${os.tmpdir()}/shot-collab.png` });
 
   console.log("\n=== 6. 撤销只影响自己 ===");
   const bobMarker = `BOBEDIT-${suffix}`;
   await pageB.bringToFront();
-  await pageB.click(".cm-content");
+  await pageB.click(EDITOR_SEL);
   await pageB.keyboard.down("Control");
   await pageB.keyboard.press("End");
   await pageB.keyboard.up("Control");
   await pageB.keyboard.type(` ${bobMarker}`);
   await pageA.waitForFunction(
-    (m) => document.querySelector(".cm-content")?.innerText.includes(m),
+    (m) =>
+      !!document
+        .querySelector(".editor-host")
+        ?.__mcMarkdownEditor?.model?.getValue()
+        ?.includes(m),
     { timeout: 10000 },
     bobMarker,
   );
   check("A 收到 B 的编辑", true);
 
   await pageA.bringToFront();
-  await pageA.click(".cm-content");
+  await pageA.click(EDITOR_SEL);
   await pageA.keyboard.down("Control");
   await pageA.keyboard.press("KeyZ");
   await pageA.keyboard.up("Control");
   await sleep(1200);
-  const afterUndo = await cmText(pageA);
+  const afterUndo = await editorText(pageA);
   check(
     "撤销后 A 自己的输入被移除",
     afterUndo && !afterUndo.includes(marker),
     afterUndo?.includes(marker) ? "仍在" : "",
   );
   check("撤销不会撤回 B 的编辑", afterUndo && afterUndo.includes(bobMarker));
-  const textB = await cmText(pageB);
+  const textB = await editorText(pageB);
   check(
     "B 端内容与 A 端一致",
     !!textB && textB.includes(bobMarker) && !textB.includes(marker),
@@ -531,7 +553,7 @@ async function main() {
 
   console.log("\n=== 7b. 收尾：B 撤回自己的编辑，工作区回到原样 ===");
   await pageB.bringToFront();
-  await pageB.click(".cm-content");
+  await pageB.click(EDITOR_SEL);
   await pageB.keyboard.down("Control");
   await pageB.keyboard.press("KeyZ");
   await pageB.keyboard.up("Control");
@@ -564,7 +586,7 @@ async function main() {
     );
     check("Monaco 显示代码内容", codeText.includes("count_words"));
   }
-  await pageA.screenshot({ path: "/tmp/shot-monaco.png" });
+  await pageA.screenshot({ path: `${os.tmpdir()}/shot-monaco.png` });
 
   // Go back to the workspace: uploading happens from the editor screen.
   await pageA.evaluate(() => {
@@ -785,14 +807,14 @@ async function main() {
 
   // Moving the file that is currently open has to carry the open path along.
   await openFile(pageA, moveFile);
-  await pageA.waitForSelector(".cm-content", { timeout: 15000 });
+  await pageA.waitForSelector(EDITOR_SEL, { timeout: 30000 });
   await dragRow(moveFile, "notes");
   await sleep(1500);
   const movedOpen = await pageA.evaluate(() => ({
     status: (document.querySelector(".statusbar")?.innerText || "")
       .replace(/\s+/g, " ")
       .trim(),
-    editable: !!document.querySelector(".cm-content"),
+    editable: !!document.querySelector(".editor-host .monaco-editor"),
   }));
   check(
     "移动打开中的文件后状态栏跟着更新",
@@ -801,7 +823,7 @@ async function main() {
     movedOpen.status,
   );
   check("移动后编辑器仍可用", movedOpen.editable, JSON.stringify(movedOpen));
-  await pageA.click(".cm-content");
+  await pageA.click(EDITOR_SEL);
   await pageA.keyboard.type(`MOVE-${suffix}`, { delay: 8 });
   await sleep(1500);
   check(
@@ -957,7 +979,7 @@ async function main() {
       status: (document.querySelector(".statusbar")?.innerText || "")
         .replace(/\s+/g, " ")
         .trim(),
-      textEditor: !!document.querySelector(".cm-content, .monaco-editor"),
+      textEditor: !!document.querySelector(".editor-host .monaco-editor"),
     };
   });
   check(
@@ -973,8 +995,8 @@ async function main() {
   check("状态栏标明这是图片", /图片/.test(imageView.status), imageView.status);
 
   await openFile(pageA, SCRATCH);
-  await pageA.waitForSelector(".cm-content", { timeout: 15000 });
-  await pageA.click(".cm-content");
+  await pageA.waitForSelector(EDITOR_SEL, { timeout: 30000 });
+  await pageA.click(EDITOR_SEL);
   await pageA.keyboard.down("Control");
   await pageA.keyboard.press("End");
   await pageA.keyboard.up("Control");
@@ -1008,21 +1030,44 @@ async function main() {
   );
   await sleep(1500);
   const insertedText = await pageA.evaluate(
-    () => document.querySelector(".cm-content")?.innerText || "",
+    () =>
+      document
+        .querySelector(".editor-host")
+        ?.__mcMarkdownEditor?.model?.getValue() || "",
   );
   check(
     "图片引用插入到文档末尾",
     insertedText.includes(`![](${insertName})`),
     insertedText.slice(-160),
   );
+  // Preview pictures are loading="lazy", so a picture at the very end of the
+  // document may never decode inside the pane. What matters here is that the
+  // reference was rendered and that the server really serves those bytes, so
+  // ask for them directly instead of waiting for a lazy decode.
+  const insertedImage = await pageA.evaluate(async () => {
+    const img = [...document.querySelectorAll(".markdown-body img")].find(
+      (node) => (node.getAttribute("src") || "").includes("insert-"),
+    );
+    if (!img) return { found: false };
+    img.scrollIntoView({ block: "center" });
+    const response = await fetch(img.getAttribute("src")).catch((err) => ({
+      ok: false,
+      status: String(err),
+    }));
+    return {
+      found: true,
+      src: img.getAttribute("src"),
+      status: response.status,
+      ok: response.ok,
+      type: response.headers?.get?.("content-type") || "",
+    };
+  });
   check(
     "插入的图片在预览里显示出来",
-    await pageA.evaluate(() => {
-      const img = [...document.querySelectorAll(".markdown-body img")].find(
-        (node) => (node.getAttribute("src") || "").includes("insert-"),
-      );
-      return !!img && img.naturalWidth > 0;
-    }),
+    insertedImage.found &&
+      insertedImage.ok &&
+      insertedImage.type.startsWith("image/"),
+    JSON.stringify(insertedImage),
   );
 
   // Files that were opened above still hold a CRDT room, and deleting a file that is
@@ -1183,7 +1228,7 @@ async function main() {
     .then(() => true)
     .catch(() => false);
   check("管理员页面列出用户", adminOk);
-  await pageA.screenshot({ path: "/tmp/shot-admin.png" });
+  await pageA.screenshot({ path: `${os.tmpdir()}/shot-admin.png` });
 
   console.log("\n=== 9b. 2FA 门禁与密钥重置 ===");
   const twoName = `two_${suffix}`;

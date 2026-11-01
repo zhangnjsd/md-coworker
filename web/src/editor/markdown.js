@@ -1,172 +1,41 @@
-// CodeMirror 6 editor for markdown files, collaborative through y-codemirror.next.
+// Monaco editor pane for markdown files, collaborative through y-monaco.
+//
+// The pane used to be CodeMirror 6. Markdown now runs on the same engine as
+// source files, so both halves of the workspace share one theme, one font
+// metric, one folding UI and one remote-caret renderer. What does not change is
+// the contract with the preview pane: the two sides exchange a single fractional
+// source line (`12.5` = half way through line 12) and each side swallows the echo
+// of its own writes by position, which is what keeps scroll linking still.
 import * as Y from "yjs";
-import { EditorState } from "@codemirror/state";
+import { MonacoBinding } from "y-monaco";
 import {
-  EditorView,
-  keymap,
-  lineNumbers,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  drawSelection,
-  dropCursor,
-  rectangularSelection,
-  crosshairCursor,
-  highlightSpecialChars,
-  scrollPastEnd,
-  placeholder as cmPlaceholder,
-} from "@codemirror/view";
-import { defaultKeymap, indentWithTab } from "@codemirror/commands";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import {
-  HighlightStyle,
-  bracketMatching,
-  foldGutter,
-  foldKeymap,
-  indentOnInput,
-  syntaxHighlighting,
-} from "@codemirror/language";
-import { tags } from "@lezer/highlight";
-import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+  MC_FONT_FAMILY,
+  MC_FONT_SIZE,
+  MC_LINE_HEIGHT,
+  MC_THEME,
+  createRemoteCursorPainter,
+  ensureEditorTheme,
+  monaco,
+} from "./monaco-shared.js";
+import "../styles/monaco.css";
 
-const editorTheme = EditorView.theme(
-  {
-    "&": {
-      height: "100%",
-      color: "var(--fg)",
-      backgroundColor: "var(--bg-editor)",
-      fontSize: "var(--fs-code)",
-    },
-    ".cm-scroller": {
-      fontFamily: "var(--font-mono)",
-      lineHeight: "1.7",
-      overflow: "auto",
-    },
-    "&.cm-focused": {
-      outline: "none",
-      boxShadow: "inset 0 0 0 1px var(--accent-line)",
-    },
-    ".cm-content": {
-      caretColor: "var(--accent)",
-      padding: "var(--sp-3) 0 var(--sp-8)",
-    },
-    ".cm-line": { padding: "0 var(--sp-5)" },
-    ".cm-gutters": {
-      backgroundColor: "var(--bg-editor)",
-      color: "var(--fg-3)",
-      border: "none",
-      borderRight: "1px solid var(--line-soft)",
-      paddingRight: "var(--sp-1)",
-    },
-    ".cm-lineNumbers .cm-gutterElement": {
-      padding: "0 var(--sp-2) 0 var(--sp-3)",
-    },
-    ".cm-activeLineGutter": {
-      backgroundColor: "transparent",
-      color: "var(--fg)",
-    },
-    ".cm-activeLine": {
-      backgroundColor: "color-mix(in oklab, var(--fg) 3.5%, transparent)",
-    },
-    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
-      {
-        backgroundColor: "color-mix(in oklab, var(--accent) 22%, transparent)",
-      },
-    ".cm-cursor, .cm-dropCursor": {
-      borderLeftColor: "var(--accent)",
-      borderLeftWidth: "2px",
-    },
-    ".cm-foldPlaceholder": {
-      backgroundColor: "var(--bg-2)",
-      color: "var(--fg-2)",
-      border: "1px solid var(--line)",
-      borderRadius: "var(--r-xs)",
-      padding: "0 var(--sp-1)",
-    },
-    ".cm-panels": { backgroundColor: "var(--bg-1)", color: "var(--fg)" },
-    ".cm-searchMatch": {
-      backgroundColor: "color-mix(in oklab, var(--warn) 26%, transparent)",
-    },
-    ".cm-searchMatch.cm-searchMatch-selected": {
-      backgroundColor: "color-mix(in oklab, var(--warn) 46%, transparent)",
-    },
-    "&.cm-focused .cm-matchingBracket": {
-      backgroundColor: "color-mix(in oklab, var(--accent) 22%, transparent)",
-      outline: "1px solid var(--accent-line)",
-    },
-    ".cm-placeholder": { color: "var(--fg-3)" },
-  },
-  { dark: true },
-);
-
-/* Syntax palette mirrors the preview's hljs colours (styles/prose.css). */
-const markdownHighlight = HighlightStyle.define([
-  {
-    tag: tags.heading1,
-    fontSize: "1.5em",
-    fontWeight: "600",
-    color: "var(--fg)",
-    letterSpacing: "-0.02em",
-  },
-  {
-    tag: tags.heading2,
-    fontSize: "1.28em",
-    fontWeight: "600",
-    color: "var(--fg)",
-    letterSpacing: "-0.015em",
-  },
-  {
-    tag: tags.heading3,
-    fontSize: "1.14em",
-    fontWeight: "600",
-    color: "var(--fg)",
-  },
-  {
-    tag: [tags.heading4, tags.heading5, tags.heading6],
-    fontWeight: "600",
-    color: "var(--fg-2)",
-  },
-  { tag: tags.strong, fontWeight: "700", color: "var(--fg)" },
-  { tag: tags.emphasis, fontStyle: "italic", color: "var(--fg-2)" },
-  {
-    tag: tags.strikethrough,
-    textDecoration: "line-through",
-    color: "var(--fg-3)",
-  },
-  { tag: tags.link, color: "var(--accent)", textDecoration: "underline" },
-  {
-    tag: tags.url,
-    color: "color-mix(in oklab, var(--accent) 70%, var(--fg-3))",
-  },
-  {
-    tag: tags.monospace,
-    color: "color-mix(in oklab, var(--accent) 80%, var(--fg))",
-    fontFamily: "var(--font-mono)",
-  },
-  { tag: tags.quote, color: "var(--fg-2)", fontStyle: "italic" },
-  { tag: tags.meta, color: "var(--fg-3)" },
-  { tag: tags.processingInstruction, color: "var(--fg-3)" },
-  { tag: tags.list, color: "var(--fg-2)" },
-  { tag: tags.contentSeparator, color: "var(--line)", fontWeight: "700" },
-  { tag: tags.keyword, color: "#d5a5eb" },
-  { tag: tags.string, color: "#a1dca2" },
-  { tag: tags.number, color: "#f9c191" },
-  { tag: tags.comment, color: "var(--fg-3)" },
-  { tag: tags.typeName, color: "#89dae3" },
-  { tag: tags.function(tags.variableName), color: "#9bccff" },
-]);
+const PADDING_TOP = 12;
+const PADDING_BOTTOM = 40;
 
 /**
+ * Markdown edits and reads one text file.
  * @param {{
  *   parent: HTMLElement,
  *   ytext: Y.Text,
  *   awareness: import('y-protocols/awareness').Awareness,
  *   onCursor?: (pos: {line: number, ch: number}) => void,
- *   onScroll?: (pos: {line: number}) => void, // fractional source line
+ *   onScroll?: (pos: {line: number}) => void, // fractional source line, 1-based
  *   onDocChange?: () => void,
  *   readOnly?: boolean,
  * }} opts
+ * @returns {Promise<object>} the same editor API the source pane exposes
  */
-export function createMarkdownEditor(opts) {
+export async function createMarkdownEditor(opts) {
   const {
     parent,
     ytext,
@@ -176,183 +45,314 @@ export function createMarkdownEditor(opts) {
     onDocChange,
     readOnly = false,
   } = opts;
-  const undoManager = new Y.UndoManager(ytext);
-  let publishing = false;
 
-  /** Publish the cursor in both awareness dialects so Monaco peers can render it. */
-  const publish = (view) => {
-    const head = view.state.selection.main.head;
-    const line = view.state.doc.lineAt(head);
-    const pos = { line: line.number - 1, ch: head - line.from };
-    ytext.doc &&
-      awareness.setLocalStateField("selection", {
-        anchor: Y.createRelativePositionFromTypeIndex(
-          ytext,
-          view.state.selection.main.anchor,
-        ),
-        head: Y.createRelativePositionFromTypeIndex(ytext, head),
-      });
-    onCursor && onCursor(pos);
-  };
+  ensureEditorTheme();
 
-  const view = new EditorView({
-    parent,
-    state: EditorState.create({
-      // ySync does not seed the view: the state must start from the shared text.
-      doc: ytext.toString(),
-      extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        highlightSpecialChars(),
-        foldGutter(),
-        drawSelection(),
-        dropCursor(),
-        rectangularSelection(),
-        crosshairCursor(),
-        EditorState.allowMultipleSelections.of(true),
-        indentOnInput(),
-        bracketMatching(),
-        highlightActiveLine(),
-        scrollPastEnd(),
-        EditorView.lineWrapping,
-        markdown({ base: markdownLanguage }),
-        syntaxHighlighting(markdownHighlight),
-        editorTheme,
-        cmPlaceholder("开始输入…"),
-        EditorView.contentAttributes.of({ spellcheck: "false" }),
-        keymap.of([
-          // y-codemirror's undo manager only ever undoes *our own* edits.
-          ...yUndoManagerKeymap,
-          ...foldKeymap,
-          ...defaultKeymap,
-          indentWithTab,
-        ]),
-        yCollab(ytext, awareness, { undoManager }),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) onDocChange && onDocChange();
-          if ((update.docChanged || update.selectionSet) && !publishing) {
-            publishing = true;
-            try {
-              publish(update.view);
-            } finally {
-              publishing = false;
-            }
-          }
-        }),
-        EditorState.readOnly.of(!!readOnly),
-      ],
-    }),
+  // The factory is async, so a fast switch between two markdown files can have a
+  // second call arrive while the first one is still resolving. Whichever call is
+  // later owns the host: retire the editor an earlier call left behind instead
+  // of stacking two Monaco instances (and two bindings) in the same pane.
+  const previous = parent.__mcMarkdownEditor;
+  if (previous && typeof previous.destroy === "function") previous.destroy();
+
+  const editor = monaco.editor.create(parent, {
+    value: "",
+    language: "markdown",
+    theme: MC_THEME,
+    // app.js already drives layout() from a ResizeObserver; automaticLayout
+    // would measure the container on every animation frame instead.
+    automaticLayout: false,
+    minimap: { enabled: false },
+    lineNumbers: "on",
+    lineNumbersMinChars: 3,
+    glyphMargin: false,
+    folding: true,
+    showFoldingControls: "always",
+    wordWrap: "on",
+    wrappingIndent: "same",
+    wrappingStrategy: "simple",
+    fontSize: MC_FONT_SIZE,
+    fontFamily: MC_FONT_FAMILY,
+    fontLigatures: true,
+    lineHeight: MC_LINE_HEIGHT,
+    padding: { top: PADDING_TOP, bottom: PADDING_BOTTOM },
+    scrollBeyondLastLine: false,
+    // Scroll linking writes absolute positions. An eased scroll would emit a
+    // burst of intermediate positions, each of which looks like a reader scroll.
+    smoothScrolling: false,
+    renderLineHighlight: "line",
+    cursorBlinking: "smooth",
+    scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+    overviewRulerLanes: 0,
+    renderWhitespace: "selection",
+    tabSize: 2,
+    stickyScroll: { enabled: false },
+    readOnly,
+    contextmenu: true,
   });
 
-  // Scroll linking exchanges a single fractional source line: `12.5` means "half
-  // way through line 12". A document ratio drifts badly once source and rendered
-  // page have different proportions, and rounding to whole lines makes the linked
-  // side jump a few pixels back and forth, so the position stays continuous here
-  // and the preview interpolates between its own anchors with the same numbers.
-  // Our own writes are ignored by position, not by pixels: placing a line far down
-  // the document takes two scroll steps (estimate, then the corrected one after
-  // CodeMirror measures the region), and both land on the line we were asked for.
-  // Comparing scroll pixels would mistake the stale event for the reader scrolling.
-  let aimedLine = null;
+  // The shared text seeds the model; the binding then keeps the two in step.
+  const model = monaco.editor.createModel(ytext.toString(), "markdown");
+  editor.setModel(model);
 
-  const topLine = () => {
-    const dom = view.scrollDOM;
-    const block = view.lineBlockAtHeight(dom.scrollTop);
-    const height = block.height || 1;
-    const frac = Math.min(1, Math.max(0, (dom.scrollTop - block.top) / height));
-    const line = view.state.doc.lineAt(block.from).number;
-    return line + (line < view.state.doc.lines ? frac : 0);
+  const binding = new MonacoBinding(ytext, model, new Set([editor]), awareness);
+
+  // Local edits are transacted with the binding as origin, and remote updates
+  // arrive with origin "remote". Tracking only the first is what makes Ctrl+Z
+  // own-edits-only: a peer's text is never on our stack to begin with.
+  const undoManager = new Y.UndoManager(ytext, {
+    trackedOrigins: new Set([null, binding]),
+  });
+
+  const painter = createRemoteCursorPainter(awareness, ytext.doc.clientID);
+
+  // ------------------------------------------------------------- cursor sync
+  let publishing = false;
+
+  /** y-monaco publishes `selection`; `cursor` is what presence and the peer
+   * panel read, so both dialects are kept in the awareness state. */
+  const publishCursor = () => {
+    const sel = editor.getSelection();
+    if (!sel) return;
+    try {
+      awareness.setLocalStateField("cursor", {
+        anchor: Y.createRelativePositionFromTypeIndex(
+          ytext,
+          model.getOffsetAt(sel.getStartPosition()),
+        ),
+        head: Y.createRelativePositionFromTypeIndex(
+          ytext,
+          model.getOffsetAt(sel.getEndPosition()),
+        ),
+      });
+    } catch {
+      /* the document may be mid-update; the next move publishes again */
+    }
   };
 
-  const onScrollEvent = () => {
-    const line = topLine();
-    if (aimedLine !== null && Math.abs(line - aimedLine) <= 0.75) return;
+  const cursorSub = editor.onDidChangeCursorSelection(() => {
+    if (publishing) return;
+    publishing = true;
+    try {
+      publishCursor();
+      const pos = editor.getPosition();
+      if (pos && onCursor)
+        onCursor({ line: pos.lineNumber - 1, ch: pos.column - 1 });
+    } finally {
+      publishing = false;
+    }
+  });
+
+  // ---------------------------------------------------------- document state
+  // React to the shared text, not the model: the ytext transaction tells a local
+  // edit (origin = binding, or the undo manager) from a peer's (origin remote).
+  const ytextObserver = (_event, transaction) => {
+    if (transaction && transaction.origin === "remote") return;
+    if (onDocChange) onDocChange();
+  };
+  ytext.observe(ytextObserver);
+
+  // ------------------------------------------------------------ scroll link
+  // See the header comment: a fractional line travels between the panes and our
+  // own writes are recognised by the line they land on, never by pixels — near
+  // the end of a document Monaco clamps scrollTop, so a pixel comparison would
+  // read our own clamped write as the reader scrolling.
+  let aimedLine = null;
+  let ready = false;
+  requestAnimationFrame(() => {
+    ready = true;
+  });
+
+  /** Vertical extent of one source line (a wrapped line is taller than 23px). */
+  const lineSpan = (lineNumber) => {
+    const total = model.getLineCount();
+    const n = Math.min(Math.max(1, Math.floor(lineNumber)), total);
+    const top = editor.getTopForLineNumber(n);
+    const next =
+      n < total ? editor.getTopForLineNumber(n + 1) : top + MC_LINE_HEIGHT;
+    return { top, next: Math.max(next, top + 1) };
+  };
+
+  /** Fractional 1-based line sitting at `scrollTop` (12.5 = line 12, half way). */
+  const fractionalLineAt = (scrollTop) => {
+    const total = model.getLineCount();
+    let lo = 1;
+    let hi = total;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (editor.getTopForLineNumber(mid) <= scrollTop) lo = mid;
+      else hi = mid - 1;
+    }
+    const { top, next } = lineSpan(lo);
+    const frac = Math.min(1, Math.max(0, (scrollTop - top) / (next - top)));
+    return lo < total ? lo + frac : lo;
+  };
+
+  const scrollSub = editor.onDidScrollChange((event) => {
+    if (!ready || !event.scrollTopChanged) return;
+    const line = fractionalLineAt(editor.getScrollTop());
+    if (aimedLine !== null && Math.abs(line - aimedLine) <= 0.75) {
+      aimedLine = null;
+      return;
+    }
     aimedLine = null;
     if (onScroll) onScroll({ line });
+  });
+
+  // ------------------------------------------------------------- undo / redo
+  const runHistory = (direction) => {
+    try {
+      if (direction === "undo") undoManager.undo();
+      else undoManager.redo();
+    } catch {
+      /* an empty stack is not an error */
+    }
+    editor.focus();
   };
-  view.scrollDOM.addEventListener("scroll", onScrollEvent, { passive: true });
+
+  // Monaco's own Ctrl+Z works on the model history, which would also replay a
+  // peer's edits; these dynamic keybindings take precedence over it.
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyZ, () =>
+    runHistory("undo"),
+  );
+  editor.addCommand(
+    monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyZ,
+    () => runHistory("redo"),
+  );
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY, () =>
+    runHistory("redo"),
+  );
+
+  publishCursor();
+
+  let disposed = false;
 
   const api = {
-    view,
-    kind: "codemirror",
+    kind: "monaco",
+    editor,
+    model,
+
     focus() {
-      view.focus();
+      editor.focus();
     },
+
     cursor() {
-      const head = view.state.selection.main.head;
-      const line = view.state.doc.lineAt(head);
-      return { line: line.number - 1, ch: head - line.from };
+      const pos = editor.getPosition();
+      return pos
+        ? { line: pos.lineNumber - 1, ch: pos.column - 1 }
+        : { line: 0, ch: 0 };
     },
-    /** Best effort jump to a remote collaborator position (0-based). */
+
+    /** Best effort jump to a collaborator position (0-based). */
     setCursor(pos) {
       if (!pos || typeof pos.line !== "number") return false;
-      const lineNo = Math.min(Math.max(1, pos.line + 1), view.state.doc.lines);
-      const line = view.state.doc.line(lineNo);
-      const offset =
-        line.from + Math.min(Math.max(0, pos.ch || 0), line.length);
-      view.dispatch({
-        selection: { anchor: offset, head: offset },
-        effects: EditorView.scrollIntoView(offset, { y: "center" }),
-        scrollIntoView: false,
-      });
-      view.focus();
+      const lineNumber = Math.min(
+        Math.max(1, pos.line + 1),
+        Math.max(1, model.getLineCount()),
+      );
+      const column = Math.min(
+        Math.max(1, (pos.ch || 0) + 1),
+        model.getLineMaxColumn(lineNumber),
+      );
+      editor.setPosition({ lineNumber, column });
+      editor.revealPositionInCenter({ lineNumber, column });
+      editor.focus();
       return true;
     },
+
     /** Follow the preview: put the fractional source line `line` at the top. */
     scrollToLine(line) {
-      const value = Number(line);
-      if (!Number.isFinite(value)) return;
-      const total = view.state.doc.lines;
-      const lineNo = Math.min(Math.max(1, Math.floor(value)), total);
-      const info = view.state.doc.line(lineNo);
-      const frac = Math.min(1, Math.max(0, value - lineNo));
-      // Inside the line the position is picked by character, which is as fine as
-      // the editor itself can express and keeps the preview's scroll continuous.
-      const pos = info.from + Math.round(frac * info.length);
-      aimedLine = value;
-      view.dispatch({
-        effects: EditorView.scrollIntoView(pos, { y: "start" }),
-      });
+      const target = Number(line);
+      if (!Number.isFinite(target)) return;
+      const total = model.getLineCount();
+      const lineNo = Math.min(Math.max(1, Math.floor(target)), total);
+      const frac = Math.min(1, Math.max(0, target - lineNo));
+      const { top, next } = lineSpan(lineNo);
+      const wanted = top + frac * (next - top);
+      const layout = editor.getLayoutInfo();
+      const lowest = Math.max(0, editor.getScrollHeight() - layout.height);
+      editor.setScrollTop(Math.min(Math.max(0, wanted), lowest));
+      // Remember the line the editor actually reached, not the one requested:
+      // at the end of the document the request is clamped as well, and the echo
+      // has to be recognised from the value the scroll event will report.
+      aimedLine = fractionalLineAt(editor.getScrollTop());
     },
 
     /**
-     * Insert `text` at the caret. It travels through the collaboration binding like
-     * any other edit, so collaborators see the insertion and the author can undo it
-     * with their own undo stack.
+     * Insert `text` at the caret. It travels through the model like typed text,
+     * so the binding publishes it to the room and the author's own undo stack
+     * owns the change.
      */
     insertAtCursor(text) {
       const value = String(text ?? "");
-      if (!value) return false;
-      const range = view.state.selection.main;
-      view.dispatch({
-        changes: { from: range.from, to: range.to, insert: value },
-        selection: { anchor: range.from + value.length },
-      });
-      view.focus();
+      if (!value || readOnly) return false;
+      const sel = editor.getSelection();
+      if (!sel) return false;
+      editor.executeEdits("mc-insert", [
+        { range: sel, text: value, forceMoveMarkers: true },
+      ]);
+      editor.pushUndoStop();
+      editor.focus();
       return true;
     },
 
     text() {
-      return view.state.doc.toString();
+      return model.getValue();
     },
+
+    layout() {
+      editor.layout();
+    },
+
     destroy() {
-      view.scrollDOM.removeEventListener("scroll", onScrollEvent);
+      // app.js may destroy us twice (closeEditor, then teardown, or a later
+      // factory call retiring a stale instance), so this must be idempotent.
+      if (disposed) return;
+      disposed = true;
+      if (parent.__mcMarkdownEditor === api) parent.__mcMarkdownEditor = null;
+      try {
+        cursorSub.dispose();
+      } catch {
+        /* ignore */
+      }
+      try {
+        scrollSub.dispose();
+      } catch {
+        /* ignore */
+      }
+      try {
+        ytext.unobserve(ytextObserver);
+      } catch {
+        /* ignore */
+      }
+      painter.destroy();
       try {
         undoManager.destroy();
       } catch {
         /* ignore */
       }
       try {
-        if (awareness.getLocalState())
-          awareness.setLocalStateField("selection", null);
+        binding.destroy();
       } catch {
         /* ignore */
       }
-      view.destroy();
+      try {
+        model.dispose();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (awareness.getLocalState()) {
+          awareness.setLocalStateField("cursor", null);
+          awareness.setLocalStateField("selection", null);
+        }
+      } catch {
+        /* ignore */
+      }
+      editor.dispose();
     },
   };
 
-  // Announce the initial cursor once the view is live.
-  publish(view);
+  parent.__mcMarkdownEditor = api;
   return api;
 }

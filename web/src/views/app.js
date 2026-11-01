@@ -5,13 +5,12 @@ import { FileTree } from "../ui/tree.js";
 import { confirmDialog, promptDialog } from "../ui/modal.js";
 import { toastError, toastInfo, toastSuccess, toastWarn } from "../ui/toast.js";
 import { countWords, el, fmtClock, svgIcon } from "../util/dom.js";
-import { createMarkdownEditor } from "../editor/markdown.js";
 import { createPreview } from "../editor/preview.js";
 import { openSettings } from "./settings.js";
 // Paper theme + export chip for the PDF export (see src/editor/pdf.js).
 import "../styles/pdf.css";
 
-// Monaco (3.4 MiB) loads lazily only for non-Markdown files; first paint uses CodeMirror only.
+// Both panes are Monaco (3.4 MiB) and load lazily on the first file opened.
 function isMarkdownPath(path) {
   return /\.(md|markdown)$/i.test(path || "");
 }
@@ -1553,7 +1552,8 @@ export function mountApp(host, opts) {
 
     try {
       if (md) {
-        state.editor = createMarkdownEditor({
+        const { createMarkdownEditor } = await import("../editor/markdown.js");
+        state.editor = await createMarkdownEditor({
           parent: editorHost,
           ytext,
           awareness: session.awareness,
@@ -1588,7 +1588,7 @@ export function mountApp(host, opts) {
 
     collab.setCurrentPath(path);
     setEditorMeta(
-      md ? "CodeMirror · Markdown" : `Monaco · ${path.split(".").pop()}`,
+      `Monaco · ${md ? "Markdown" : path.split(".").pop()}`,
     );
 
     // Relative image paths (![](assets/x.png)) resolve against the open
@@ -1616,8 +1616,15 @@ export function mountApp(host, opts) {
     ytext.observe(observer);
     state.editorObserver = { ytext, fn: observer };
 
-    if (md) preview.renderNow(ytext.toString());
-    else updateText();
+    // The markdown pane paints the preview immediately (renderNow skips the
+    // throttle), so the status bar has to be told the word count here — the
+    // observer only fires once somebody types.
+    if (md) {
+      const initial = ytext.toString();
+      preview.renderNow(initial);
+      state.words = countWords(initial);
+      renderWords();
+    } else updateText();
 
     const pos = state.editor.cursor
       ? state.editor.cursor()
