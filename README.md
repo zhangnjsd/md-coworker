@@ -151,24 +151,24 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 
 ```
 src/
-  main.rs      启动、管理员初始化、优雅退出
-  config.rs    命令行参数与目录/主密钥
-  error.rs     anyhow 封装为 HTTP 响应（统一 {"error":{"code","message"}}）
-  crypto.rs    HKDF / AES-256-GCM / Ed25519 / base32 / TOTP
-  db.rs        sqlx + PostgreSQL：用户、会话、挑战、2FA 票据（启动时建表）
-  auth.rs      登录、2FA、密钥轮换
-  admin.rs     用户管理
-  files.rs     工作区文件树与读写（安全路径解析）
-  upload.rs    流式上传（临时文件 + 原子改名）与 /api/raw 原始资源
-  settings.rs  管理员可调的运行时配置（上传大小上限）
-  collab.rs    WebSocket + yrs 文档房间 + 保存 + presence
-  api.rs       路由装配、静态资源托管
-web/           前端（Vite + 原生 ES modules）
-  src/styles/  六份 CSS：tokens / controls / shell / prose / views / overlays
-tools/         端到端冒烟测试（smoke）、真浏览器测试（browser）、截图（shots）
-demo-workspace/ 示例工作区
-docs/protocol.md 前后端协议契约
-docs/design.md   前端视觉/交互规范
+  main.rs       启动、管理员初始化、优雅退出
+  config.rs     命令行参数与目录/主密钥
+  error.rs      anyhow 封装为 HTTP 响应
+  crypto.rs     HKDF / AES-256-GCM / Ed25519 / base32 / TOTP
+  db.rs         sqlx + PostgreSQL：用户、会话、挑战、2FA 票据（启动时建表）
+  auth.rs       登录、2FA、密钥轮换
+  admin.rs      用户管理
+  files.rs      工作区文件树与读写
+  upload.rs     流式上传与 /api/raw 原始资源
+  settings.rs   管理员可调的运行时配置
+  collab.rs     WebSocket + yrs 文档房间 + 保存 + presence
+  api.rs        路由装配、静态资源托管
+web/            前端
+tools/          端到端冒烟测试、真浏览器测试、截图
+docs
+  protocol.md   前后端协议契约
+docs
+  design.md     前端视觉/交互规范
 ```
 
 ## 测试
@@ -179,8 +179,8 @@ just smoke       # 端到端接口 + WebSocket：登录、文件、双客户端�
 just browser     # Chromium 双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
 ```
 
-`smoke` / `browser` 需要服务已在 `BIND`（默认 `127.0.0.1:3000`）上运行，
-并先 `just install` 装好 `web/` 与 `tools/` 的 npm 依赖（ws / yjs / tweetnacl / puppeteer-core）。
+`smoke` / `browser` 需要服务已在 `BIND` 上运行，
+并先 `just install` 装好 `web/` 与 `tools/` 的 npm 依赖。
 
 ## 常用命令
 
@@ -190,14 +190,14 @@ just browser     # Chromium 双窗口：登录、预览渲染、实时同步、�
 just install     # 安装 web/ 与 tools/ 的 npm 依赖
 just web         # 构建前端到 web/dist
 just release     # release 构建后端
-just run         # release 构建并启动（WORKSPACE=... BIND=... just run）
+just run         # release 构建并启动
 just dev         # debug 构建并启动
 just test        # cargo test
 just smoke       # 接口冒烟测试
 just browser     # 真浏览器测试
 just shots       # 重新生成 docs/screenshots
 just fmt         # cargo fmt
-just db-up       # 启动本地 PostgreSQL 集群（幂等，缺库时自动 createdb）
+just db-up       # 启动本地 PostgreSQL
 just db-down     # 停止本地集群
 just db-status   # 查询表和用户数量
 just db-psql     # 手动查表
