@@ -8,10 +8,22 @@
 
 /* ==================================================================== frame */
 
+/* The frame is sized by the `html/body { height: 100% }` chain and nothing else.
+ * Do not reintroduce `100vh` (or `100dvh`) on a descendant: `vh` is measured
+ * against the viewport, while `height: 100%` is measured against the ancestor
+ * box, and the two disagree by a few pixels whenever the viewport height is not
+ * an integer (browser zoom, Windows DPI scaling) or a classic scrollbar takes
+ * layout space. That leftover is what lets the page be panned by a few pixels
+ * with no scrollbar to show for it. */
 html {
   width: 100%;
   height: 100%;
+  /* `clip` rather than `hidden`: `hidden` is only "no scrollbar", the box is
+   * still a scroll container, so wheel chaining, focus and scrollIntoView can
+   * still shift it. `clip` has no scrollable overflow at all. `hidden` stays as
+   * the fallback for engines without `overflow: clip`. */
   overflow: hidden;
+  overflow: clip;
   overscroll-behavior-x: none;
   overscroll-behavior-y: none;
   display: block;
@@ -19,6 +31,23 @@ html {
 
 body {
   overflow: hidden;
+  overflow: clip;
+}
+
+/* Third-party renderers park containers directly on <body>, outside the shell
+ * and outside every clipping box in the frame. mermaid's tooltip container is
+ * an absolutely positioned, empty 6px box with `auto` offsets, so it settles in
+ * the static position just under the shell (y = viewport height) and grows the
+ * document's scroll area by those 6px. That is the "scroll down a few pixels,
+ * top edge moves up, a sliver of nothing appears at the bottom, then it stops"
+ * bug: there is real overflow, but no scrollbar big enough to show for it.
+ * Pin the strays to the top-left corner so they contribute no overflow; mermaid
+ * still sets inline left/top when it actually shows the tooltip, which wins. */
+body > .mermaidTooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
 }
 
 .view-app {
@@ -29,12 +58,14 @@ body {
   overscroll-behavior-y: none;
   min-height: 0;
   overflow: hidden;
+  overflow: clip;
 }
 
 .app-shell {
   display: grid;
   grid-template-rows: var(--topbar-h) minmax(0, 1fr) var(--status-h);
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   background: var(--bg);
   color: var(--fg);

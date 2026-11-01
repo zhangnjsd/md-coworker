@@ -6,7 +6,7 @@
 图片、PDF、代码等附件可以直接拖进窗口上传，单文件大小上限由管理员设置。
 
 ```
-浏览器 (CodeMirror 6 / Monaco + Yjs)
+浏览器 (Monaco + Yjs)
         │  WebSocket (JSON + base64 二进制帧)
         ▼
 Axum (0.8) ── yrs 文档房间 ── 400ms 防抖保存 ──▶ 工作区目录里的 .md / .rs / …
@@ -63,13 +63,6 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 - 任何用户都可以在设置里**重新生成密钥对**，旧私钥立即失效。
 - 用户可自行开启 TOTP 2FA（扫码或手输密钥），开启后登录需要「私钥签名 + 6 位动态码」两步。
 - 会话保存在 HttpOnly Cookie（`mc_sid`，SameSite=Lax）里，服务端只存其 SHA-256。
-
-## 编辑器
-
-| 文件类型 | 编辑器 | 说明 |
-| --- | --- | --- |
-| `.md` / `.markdown` | CodeMirror 6 + y-codemirror | 左编辑、右预览，预览支持 **KaTeX 公式**、**Mermaid 图表**、代码高亮，HTML 经 DOMPurify 过滤 |
-| 其它文本文件 | Monaco（`vs-dark`）+ y-monaco | 即 VSCode 的开源编辑器内核；只在桌面端加载，按需动态引入 |
 
 ## 文件上传
 

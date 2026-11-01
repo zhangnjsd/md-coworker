@@ -110,7 +110,7 @@ const ctxA = await browser.createBrowserContext();
 const pA = await ctxA.newPage();
 await loginPage(pA, "admin", adminKey);
 await openFile(pA, "README.md");
-await pA.waitForSelector(".cm-content");
+await pA.waitForSelector(".editor-host .view-lines", { timeout: 30000 });
 
 const peers = [];
 for (const user of made.slice(0, 2)) {
@@ -118,14 +118,14 @@ for (const user of made.slice(0, 2)) {
   const page = await ctx.newPage();
   await loginPage(page, user.username, user.key);
   await openFile(page, "README.md");
-  await page.waitForSelector(".cm-content");
+  await page.waitForSelector(".editor-host .view-lines", { timeout: 30000 });
   peers.push({ ctx, page });
 }
 
 // distinct carets, so the presence panel shows real positions
-await peers[0].page.click(".cm-content");
+await peers[0].page.click(".editor-host .view-lines");
 for (let i = 0; i < 18; i++) await peers[0].page.keyboard.press("ArrowDown");
-await peers[1].page.click(".cm-content");
+await peers[1].page.click(".editor-host .view-lines");
 for (let i = 0; i < 16; i++) await peers[1].page.keyboard.press("ArrowDown");
 await sleep(1600);
 await pA.screenshot({ path: `${OUT}/editor.png` });

@@ -50,7 +50,7 @@ export function lighten(color, amount = 0.45) {
   });
 }
 
-/** Awareness `user` payload consumed by y-codemirror / y-monaco cursor rendering. */
+/** Awareness `user` payload consumed by y-monaco cursor rendering. */
 export function awarenessUser(user) {
   const color = user?.color || "#4f9cf9";
   return {

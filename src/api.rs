@@ -73,7 +73,7 @@ pub fn router(state: AppState) -> Router {
 
 /// Baseline security headers, including a content security policy. The policy is not
 /// the strictest one possible (`'unsafe-inline'` styles and `blob:` workers are needed
-/// by KaTeX, Mermaid, CodeMirror and Monaco), but it locks down the parts that matter:
+/// by KaTeX, Mermaid and Monaco), but it locks down the parts that matter:
 /// no third-party scripts, no `eval`, no framing of the app and no base-uri rewriting.
 type SecurityHeaders = tower::layer::util::Stack<
     SetResponseHeaderLayer<HeaderValue>,

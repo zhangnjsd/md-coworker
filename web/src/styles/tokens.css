@@ -119,7 +119,13 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
-  min-width: 1024px;
+  /* No `min-width` floor here. A floor larger than the window means the frame
+   * is wider than the viewport, i.e. horizontal overflow the document can be
+   * panned into with no scrollbar to show for it — the same phantom-scroll bug
+   * as a `100vh` descendant. The workspace targets desktop widths, but when the
+   * window is narrower than the columns add up to, the panes must compress
+   * inside the viewport instead of pushing the frame past its right edge. */
+  min-width: 0;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
