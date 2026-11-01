@@ -1031,6 +1031,52 @@ async function main() {
   await pageA.click('.tree-row[data-path="README.md"]');
   await sleep(1000);
 
+  console.log("\n=== 8g. 导出 PDF ===");
+  // The exporter rasterises the preview with html2canvas, which chokes on any
+  // colour function it cannot parse and on `content: ""` pseudo elements — both
+  // of which real documents contain. Catch the blob to prove a real PDF came out.
+  await pageA.evaluate(() => {
+    window.__pdfBlob = null;
+    window.__pdfName = null;
+    const create = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => {
+      if (blob && blob.type === "application/pdf") window.__pdfBlob = blob;
+      return create(blob);
+    };
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download) {
+        window.__pdfName = this.download;
+        return undefined;
+      }
+      return click.call(this);
+    };
+  });
+  await pageA.evaluate(() => {
+    const button = [...document.querySelectorAll(".pane-head button")].find(
+      (node) => node.textContent.includes("导出 PDF"),
+    );
+    button?.click();
+  });
+  let pdfBytes = null;
+  for (let i = 0; i < 200; i += 1) {
+    pdfBytes = await pageA.evaluate(async () => {
+      if (!window.__pdfBlob) return null;
+      const buffer = new Uint8Array(await window.__pdfBlob.arrayBuffer());
+      return { size: buffer.length, head: String.fromCharCode(...buffer.slice(0, 5)) };
+    });
+    if (pdfBytes) break;
+    await sleep(500);
+  }
+  const pdfName = await pageA.evaluate(() => window.__pdfName);
+  check("导出 PDF 拿到了文件", !!pdfBytes, pdfBytes ? `${pdfBytes.size} 字节` : "没有产出");
+  check("PDF 文件头正确", pdfBytes?.head === "%PDF-", pdfBytes?.head || "");
+  check("PDF 按当前文件名命名", pdfName === "README.pdf", String(pdfName));
+  check(
+    "导出期间没有留下离屏纸张",
+    await pageA.evaluate(() => document.querySelectorAll(".pdf-stage").length === 0),
+  );
+
   // Clean up through the API so repeated runs stay idempotent.
   for (const path of [
     SCRATCH,

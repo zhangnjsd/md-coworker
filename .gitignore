@@ -1,6 +1,6 @@
 /target
 /data
-/demo-workspace
+/workspace
 node_modules/
 web/dist/
 *.log

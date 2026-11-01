@@ -1,7 +1,7 @@
 # md-coworker common tasks (run `just --list` to see them)
 set shell := ["bash", "-uc"]
 
-workspace := env("WORKSPACE", "./demo-workspace")
+workspace := env("WORKSPACE", "./workspace")
 bind      := env("BIND", "0.0.0.0:8001")
 
 # PostgreSQL: a project-local cluster keeps the demo self-contained. Point
@@ -13,8 +13,6 @@ pg_user := env("PG_USER", "md_coworker")
 pg_db   := env("PG_DB", "md_coworker")
 db_url  := env("DATABASE_URL", "postgres://md_coworker@127.0.0.1:5433/md_coworker")
 
-# Reachability helpers: the WSL NAT address changes on every restart, so these
-# are computed instead of hard-coded.
 port   := `echo "${BIND:-0.0.0.0:8001}" | cut -d: -f2`
 wsl_ip := `hostname -I | awk '{print $1}'`
 
