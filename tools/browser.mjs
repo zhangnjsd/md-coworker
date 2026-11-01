@@ -1044,6 +1044,22 @@ async function main() {
     };
   });
   await pageA.evaluate(() => {
+    window.__paperGeometry = null;
+    const sample = () => {
+      const stage = document.querySelector(".pdf-stage");
+      const paper = stage && stage.querySelector(".pdf-paper");
+      if (!paper) return;
+      const stageRect = stage.getBoundingClientRect();
+      const paperRect = paper.getBoundingClientRect();
+      window.__paperGeometry = {
+        stageLeft: Math.round(stageRect.left),
+        stageWidth: Math.round(stageRect.width),
+        paperWidth: Math.round(paperRect.width),
+        paperLeft: Math.round(paperRect.left),
+      };
+    };
+    const timer = setInterval(sample, 120);
+    setTimeout(() => clearInterval(timer), 30000);
     const button = [...document.querySelectorAll(".pane-head button")].find(
       (node) => node.textContent.includes("导出 PDF"),
     );
@@ -1062,6 +1078,21 @@ async function main() {
     if (pdfBytes) break;
     await sleep(500);
   }
+  // The capture rectangle has to coincide with the paper. html2canvas clamps it
+  // to the window, so a stage pushed off-screen with a negative offset lost a
+  // slice on the left and every page came out shifted sideways with its right
+  // edge cut off.
+  const paperGeometry = await pageA.evaluate(() => window.__paperGeometry);
+  check(
+    "纸张从视口原点开始被抓取",
+    !!paperGeometry &&
+      paperGeometry.stageLeft === 0 &&
+      paperGeometry.paperLeft === 0 &&
+      paperGeometry.paperWidth === 794 &&
+      paperGeometry.stageWidth === 794,
+    JSON.stringify(paperGeometry),
+  );
+
   const pdfToast = await pageA.evaluate(() =>
     [...document.querySelectorAll(".toast")]
       .map((node) => node.textContent.trim())
