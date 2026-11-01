@@ -97,13 +97,36 @@
   --danger-ink: #ffffff;
 
   box-sizing: border-box;
-  width: 794px;
-  padding: 40px 48px 44px;
   background: #ffffff;
   color: #262d36;
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.72;
+}
+
+/* One A4 sheet, built by the export (see buildPages() in editor/pdf.js).
+ *
+ * html2pdf cuts one tall canvas at fixed pixel rows, which cannot tell a line of
+ * text from the gap under it — hence papers with half a heading or half a code
+ * line. The export therefore flows the document into boxes of exactly this size
+ * and hands them over: the cuts land on page boundaries, where nothing is.
+ *
+ * The height is A4 at 96 dpi (794 × 297 / 210 = 1123), so the sheet's own pixel
+ * height and the PDF page height are the same rectangle. */
+.pdf-page {
+  box-sizing: border-box;
+  width: 794px;
+  height: 1123px;
+  padding: 40px 48px 44px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+/* flow-root keeps child margins inside the box, so the export can measure
+ * content height honestly instead of seeing them collapse through it. */
+.pdf-flow {
+  display: flow-root;
+  height: 100%;
 }
 
 /* One column, full measure: the screen column is sized for a split pane. */

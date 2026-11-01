@@ -11,7 +11,7 @@ const BASE = process.env.MC_BASE || process.argv[2] || "http://127.0.0.1:3000";
 const KEY_FILE = process.argv[3] || "data/bootstrap-admin.key";
 const WS_BASE = BASE.replace(/^http/, "ws");
 // Workspace directory under test (used to verify that edits really land on disk)
-const WS_ROOT = process.env.MC_WS_ROOT || "demo-workspace";
+const WS_ROOT = process.env.MC_WS_ROOT || "workspace";
 
 let failures = 0;
 function check(name, cond, extra = "") {

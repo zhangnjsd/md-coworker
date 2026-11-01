@@ -8,7 +8,7 @@ import nacl from "tweetnacl";
 
 const BASE = process.env.MC_BASE || process.argv[2] || "http://127.0.0.1:3000";
 const KEY_FILE = process.argv[3] || "data/bootstrap-admin.key";
-const WS_ROOT = process.env.MC_WS_ROOT || "demo-workspace";
+const WS_ROOT = process.env.MC_WS_ROOT || "workspace";
 // The collaborating tests type into the document they opened, so they work on a
 // file this script owns instead of the demo workspace's own documents.
 const SCRATCH = "collab-sync-test.md";
@@ -1045,6 +1045,9 @@ async function main() {
   });
   await pageA.evaluate(() => {
     window.__paperGeometry = null;
+    window.__paperPages = null;
+    let lastCount = -1;
+    let stable = null;
     const sample = () => {
       const stage = document.querySelector(".pdf-stage");
       const paper = stage && stage.querySelector(".pdf-paper");
@@ -1057,6 +1060,24 @@ async function main() {
         paperWidth: Math.round(paperRect.width),
         paperLeft: Math.round(paperRect.left),
       };
+      // Pagination appends a block, measures it and moves it on, so a page is
+      // briefly over-full. Remember the sheet only once the page count has
+      // stopped changing — that is the state the capture is taken of.
+      const pages = [...paper.querySelectorAll(".pdf-page")];
+      if (pages.length && pages.length === lastCount) {
+        const first = pages[0].getBoundingClientRect();
+        stable = {
+          pages: pages.length,
+          width: Math.round(first.width),
+          height: Math.round(first.height),
+          overflowing: pages.filter((page) => {
+            const flow = page.querySelector(".pdf-flow");
+            return flow ? flow.scrollHeight > flow.clientHeight + 1 : false;
+          }).length,
+        };
+        window.__paperPages = stable;
+      }
+      lastCount = pages.length;
     };
     const timer = setInterval(sample, 120);
     setTimeout(() => clearInterval(timer), 30000);
@@ -1091,6 +1112,21 @@ async function main() {
       paperGeometry.paperWidth === 794 &&
       paperGeometry.stageWidth === 794,
     JSON.stringify(paperGeometry),
+  );
+
+  // The sheet is paginated before it is photographed: one A4 box per page, with
+  // nothing spilling over a page's bottom edge (that spill is what used to cut
+  // headings and lines of code in half).
+  const paperPages = await pageA.evaluate(() => window.__paperPages);
+  check(
+    "导出把文档分成了 A4 页",
+    !!paperPages && paperPages.pages >= 2 && paperPages.width === 794,
+    JSON.stringify(paperPages),
+  );
+  check(
+    "导出后没有内容溢出页底",
+    paperPages?.overflowing === 0,
+    paperPages ? `${paperPages.overflowing} 页溢出` : "没有采样",
   );
 
   const pdfToast = await pageA.evaluate(() =>

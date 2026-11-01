@@ -175,35 +175,284 @@ function whenImagesSettled(root) {
 }
 
 /**
- * Build the off-screen page: a clone of the rendered preview inside the white
- * paper shell. Cloning (instead of moving) keeps the live preview untouched.
+ * A4 at 96 dpi: the box every paper page is. Keeping it exact is what lets the
+ * export lay the document out itself instead of letting html2pdf slice one tall
+ * canvas at arbitrary pixel rows — a slice cannot tell a line of text from a
+ * gap, which is why code blocks and pictures used to be cut in half.
+ */
+const PAGE_WIDTH_PX = 794;
+const PAGE_HEIGHT_PX = 1123;
+/** Paper margins. The content column is 698 × 1039. */
+const PAGE_PADDING = { top: 40, right: 48, bottom: 44, left: 48 };
+/** Room a page has for content — the number every fitting decision uses. */
+const PAGE_CONTENT_PX = PAGE_HEIGHT_PX - PAGE_PADDING.top - PAGE_PADDING.bottom;
+/** Smallest slice of a page worth filling before breaking early. */
+const MIN_FILL_PX = 48;
+
+/** Clone a block for the paper: lazy images would stay blank off-screen. */
+function cloneForPaper(node) {
+  const clone = node.cloneNode(true);
+  if (clone.nodeName === "IMG") clone.setAttribute("loading", "eager");
+  for (const img of clone.querySelectorAll?.("img") || []) {
+    img.setAttribute("loading", "eager");
+  }
+  return clone;
+}
+
+function isHeading(node) {
+  return /^H[1-6]$/i.test(node.tagName || "");
+}
+
+function isCodeBlock(node) {
+  return !!node.classList?.contains("code-block");
+}
+
+/** A picture on its own: the one kind of block that may be scaled to fit. */
+function isImageBlock(node) {
+  if (node.nodeName === "IMG") return true;
+  if (!node.querySelectorAll) return false;
+  return node.querySelectorAll("img").length === 1 && !node.textContent.trim();
+}
+
+/**
+ * Flatten a highlighted `<code>` into `{text, classes}` runs. Highlighting wraps
+ * tokens in spans that may well span a newline, so the split has to happen on
+ * the text itself and carry the span classes along.
+ */
+function codeSegments(codeEl) {
+  const segments = [];
+  const walk = (node, classes) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        segments.push({ text: child.data, classes });
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const own =
+          child.className && typeof child.className === "string"
+            ? child.className
+            : "";
+        walk(child, own ? (classes ? `${classes} ${own}` : own) : classes);
+      }
+    }
+  };
+  walk(codeEl, "");
+  return segments;
+}
+
+/** The same runs, grouped per source line. */
+function codeLines(codeEl) {
+  const lines = [[]];
+  for (const { text, classes } of codeSegments(codeEl)) {
+    text.split("\n").forEach((part, index) => {
+      if (index > 0) lines.push([]);
+      if (part) lines[lines.length - 1].push({ text: part, classes });
+    });
+  }
+  return lines;
+}
+
+/** Replace the contents of `codeEl` with `lines`, re-wrapping the classes. */
+function fillCode(codeEl, lines) {
+  codeEl.replaceChildren();
+  lines.forEach((line, index) => {
+    if (index > 0) codeEl.append(document.createTextNode("\n"));
+    for (const { text, classes } of line) {
+      if (!classes) {
+        codeEl.append(document.createTextNode(text));
+        continue;
+      }
+      const span = document.createElement("span");
+      span.className = classes;
+      span.textContent = text;
+      codeEl.append(span);
+    }
+  });
+}
+
+function codeOf(block) {
+  return block.querySelector("pre code") || block.querySelector("code");
+}
+
+/**
+ * Build the off-screen pages: the rendered preview flowed into A4-sized boxes at
+ * export time.
+ *
+ * html2pdf photographs one canvas and cuts it into pages at fixed pixel rows, so
+ * a document whose content does not happen to align with those rows loses the
+ * bottom half of a heading, a picture or a line of code. Flowing the blocks into
+ * real page boxes first means the cuts land where nothing is: a block that does
+ * not fit moves to the next page, a heading never ends a page alone, a code
+ * block is split between lines, and a picture taller than the page is scaled
+ * down instead of being clipped.
  * @param {HTMLElement} source rendered preview host
  * @param {string} [title] document path, used as PDF metadata
  */
-function buildPaper(source, title) {
+async function buildPages(source, title) {
   const stage = document.createElement("div");
   stage.className = "pdf-stage";
   stage.setAttribute("aria-hidden", "true");
 
   const paper = document.createElement("article");
   paper.className = "pdf-paper";
+  if (title) paper.setAttribute("data-title", title);
+  stage.append(paper);
+  // Flow needs real boxes: an unparented stage measures zero, and every block
+  // would look like it fits.
+  document.body.append(stage);
 
-  const body = document.createElement("div");
-  body.className = "pdf-body markdown-body";
-  for (const child of source.children) {
-    const clone = child.cloneNode(true);
-    // Lazy images would stay blank inside an off-screen box.
-    if (clone.nodeName === "IMG") clone.setAttribute("loading", "eager");
-    for (const img of clone.querySelectorAll?.("img") || []) {
-      img.setAttribute("loading", "eager");
+  let flow = null;
+  let pageCount = 0;
+
+  const startPage = () => {
+    const page = document.createElement("section");
+    page.className = "pdf-page";
+    const inner = document.createElement("div");
+    // The prose rules hang off .markdown-body, so every page carries it.
+    inner.className = "pdf-flow markdown-body";
+    page.append(inner);
+    paper.append(page);
+    pageCount += 1;
+    flow = inner;
+  };
+
+  const overflows = () => flow.scrollHeight > PAGE_CONTENT_PX + 1;
+
+  /** Append `block` if it fits; report what it measured either way. */
+  const tryPlace = (block) => {
+    flow.append(block);
+    const height = block.getBoundingClientRect().height;
+    if (!overflows()) return { placed: true, height };
+    block.remove();
+    return { placed: false, height };
+  };
+
+  /**
+   * Start the next page, taking any headings stranded at the bottom of this one:
+   * a heading is a promise about what follows it, so it belongs with the content
+   * that did not fit.
+   */
+  const breakPage = () => {
+    const stranded = [];
+    while (flow.lastElementChild && isHeading(flow.lastElementChild)) {
+      stranded.unshift(flow.lastElementChild);
+      flow.lastElementChild.remove();
     }
-    body.append(clone);
+    startPage();
+    for (const node of stranded) flow.append(node);
+  };
+
+  /** Scale a picture until it fits one page instead of clipping it. */
+  const shrinkToPage = (block) => {
+    const images =
+      block.nodeName === "IMG" ? [block] : [...block.querySelectorAll("img")];
+    for (const img of images) {
+      img.style.maxHeight = `${PAGE_CONTENT_PX - 12}px`;
+      img.style.width = "auto";
+      img.style.height = "auto";
+    }
+  };
+
+  /** Split a code block between lines across as many pages as it needs. */
+  const flowCode = (block) => {
+    const code = codeOf(block);
+    if (!code) {
+      flow.append(block);
+      return;
+    }
+    const lines = codeLines(code);
+    if (lines.length < 2) {
+      flow.append(block);
+      return;
+    }
+    let index = 0;
+    let guard = 0;
+    while (index < lines.length && guard < 500) {
+      guard += 1;
+      if (
+        flow.children.length &&
+        PAGE_CONTENT_PX - flow.scrollHeight < MIN_FILL_PX
+      ) {
+        breakPage();
+      }
+      const part = cloneForPaper(block);
+      const partCode = codeOf(part);
+      fillCode(partCode, lines.slice(index));
+      flow.append(part);
+      if (!overflows()) {
+        index = lines.length;
+        break;
+      }
+      // Too tall for what is left: bisect the longest prefix that does fit.
+      let low = 1;
+      let high = lines.length - index;
+      let best = 0;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        fillCode(partCode, lines.slice(index, index + mid));
+        if (!overflows()) {
+          best = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      if (best === 0) {
+        part.remove();
+        if (!flow.children.length) {
+          // A single line is taller than a page; nothing left to try.
+          const forced = cloneForPaper(block);
+          fillCode(codeOf(forced), lines.slice(index, index + 1));
+          flow.append(forced);
+          index += 1;
+        } else {
+          breakPage();
+        }
+        continue;
+      }
+      fillCode(partCode, lines.slice(index, index + best));
+      index += best;
+      if (index < lines.length) breakPage();
+    }
+  };
+
+  // Pictures must have their intrinsic size before anything is measured: an
+  // image that has not decoded yet reports height 0, the block then looks like
+  // it fits, and the page is built around a hole that fills in later and
+  // overflows. Park the clones on a scratch page until they are ready.
+  const blocks = [...source.children].map(cloneForPaper);
+  const scratch = document.createElement("section");
+  scratch.className = "pdf-page";
+  const scratchFlow = document.createElement("div");
+  scratchFlow.className = "pdf-flow markdown-body";
+  scratch.append(scratchFlow);
+  paper.append(scratch);
+  for (const block of blocks) scratchFlow.append(block);
+  await whenImagesSettled(paper);
+  scratch.remove();
+  pageCount = 0;
+  paper.replaceChildren();
+
+  startPage();
+  for (const block of blocks) {
+    const attempt = tryPlace(block);
+    if (attempt.placed) continue;
+
+    if (isCodeBlock(block)) {
+      flowCode(block);
+      continue;
+    }
+    if (isImageBlock(block) && attempt.height > PAGE_CONTENT_PX) {
+      shrinkToPage(block);
+      if (tryPlace(block).placed) continue;
+    }
+    if (flow.children.length) breakPage();
+    if (!tryPlace(block).placed) {
+      // Taller than a page even on an empty one: the page clips it, but at
+      // least nothing else is pushed around by a block that cannot fit.
+      flow.append(block);
+    }
   }
 
-  paper.append(body);
-  stage.append(paper);
-  if (title) paper.setAttribute("data-title", title);
-  return { stage, paper };
+  return { stage, paper, pageCount: Math.max(pageCount, 1) };
 }
 
 /** Ownership token of the running export, so stale sweepers stay out of its way. */
@@ -297,7 +546,7 @@ export async function exportMarkdownPdf(opts) {
   const bodyKids = new Set(document.body.children);
   const serial = ++exportSerial;
 
-  const { stage, paper } = buildPaper(source, title);
+  const { stage, paper, pageCount } = await buildPages(source, title);
   document.body.append(stage);
   // Diagrams arrive drawn for the dark pane; draw them again on paper ink while
   // the page is off-screen. Failing here leaves the dark ones in place.
@@ -327,7 +576,11 @@ export async function exportMarkdownPdf(opts) {
     // Photographing the whole paper in one go is what makes a long document
     // freeze the tab, so size the raster first and refuse the impossible cases
     // while the page is still responsive.
-    const paperHeight = Math.max(paper.scrollHeight, 1);
+    // Trim the last few pixels: html2pdf's slice is a fraction of a pixel
+    // shorter than a sheet, so a sheet-exact height leaves a sliver that it
+    // rounds up into a blank trailing page. Every page keeps 44px of bottom
+    // padding, so nothing real lives in the pixels dropped here.
+    const paperHeight = pageCount * PAGE_HEIGHT_PX - 4;
     const budgetScale = Math.sqrt(
       CANVAS_AREA_BUDGET / (PAPER_WIDTH_PX * paperHeight),
     );
@@ -336,7 +589,9 @@ export async function exportMarkdownPdf(opts) {
     }
     const scale = Math.min(MAX_SCALE, Math.floor(budgetScale * 100) / 100);
     const options = {
-      margin: [14, 14, 16, 14],
+      // The pages are already A4 boxes: a PDF margin would shrink the sheet and
+      // move every cut, so the paper supplies its own padding instead.
+      margin: 0,
       filename,
       // JPEG keeps long documents to a few MB; text stays crisp at scale 2.
       image: { type: "jpeg", quality: 0.95 },
@@ -384,25 +639,20 @@ export async function exportMarkdownPdf(opts) {
           normaliseCloneColours(clonedDoc);
         },
       },
+      // Real A4, so the file prints at the size it claims. The slice html2pdf
+      // takes is a fraction of a pixel shorter than a sheet (it derives the
+      // page height from the canvas width and the A4 ratio), which is why every
+      // page keeps its content inset by its own padding: a page never ends
+      // closer to the fold than that rounding can reach.
       jsPDF: {
         unit: "mm",
         format: "a4",
         orientation: "portrait",
         compress: true,
       },
-      pagebreak: {
-        mode: ["css", "legacy"],
-        avoid: [
-          "pre",
-          "table",
-          "img",
-          "blockquote",
-          "figure",
-          "h2",
-          "h3",
-          "h4",
-        ],
-      },
+      // Nothing to avoid: the pages are built, so the only cuts html2pdf makes
+      // are the page boundaries it can no longer get wrong.
+      pagebreak: { mode: [] },
     };
 
     await withTimeout(
