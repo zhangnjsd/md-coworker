@@ -313,52 +313,81 @@ export function createPreview(opts) {
    * started earlier must not drag the reader back to where it was then.
    */
   let syncSeq = 0;
-  /** Where the reader "should" be: the last aimed-at position, not a stale capture. */
-  let currentAnchor = null;
+  /** Where the reader "should" be: the last aimed-at position, in source lines. */
+  let currentLine = null;
 
   const anchors = () => [...container.querySelectorAll("[data-line]")];
   const anchorLine = (el) => Number(el.getAttribute("data-line")) || 0;
-  const anchorTop = (el) => {
-    const box = container.getBoundingClientRect();
-    return el.getBoundingClientRect().top - box.top + container.scrollTop;
+  const anchorTop = (el, box) => {
+    const rect = el.getBoundingClientRect();
+    return rect.top - box.top + container.scrollTop;
   };
 
-  /** Block currently crossing the top edge, plus how far into it we are. */
-  const anchorAtTop = () => {
-    const scrollTop = container.scrollTop;
-    let found = null;
-    let first = null;
+  /**
+   * Every rendered block that knows its source line, as a table of
+   * `{line, top, height}` ordered by line. Two blocks can claim the same line (a
+   * paragraph and the list right after it), and only the first one is kept so the
+   * table stays monotonic.
+   */
+  const positionTable = () => {
+    const box = container.getBoundingClientRect();
+    const out = [];
     for (const el of anchors()) {
       const line = anchorLine(el);
       if (!line) continue;
-      const top = anchorTop(el);
-      if (!first) first = { el, line, top };
-      if (top <= scrollTop + 1) found = { el, line, top };
-      else break; // anchors appear in document order, so tops only grow
+      const last = out[out.length - 1];
+      if (last && line <= last.line) continue;
+      out.push({ line, top: anchorTop(el, box), height: el.offsetHeight || 0 });
     }
-    const anchor = found || first;
-    if (!anchor) return null;
-    const height = anchor.el.offsetHeight || 1;
-    return {
-      el: anchor.el,
-      line: anchor.line,
-      top: anchor.top,
-      frac: Math.min(1, Math.max(0, (scrollTop - anchor.top) / height)),
-    };
+    return out;
   };
 
-  /** Block whose source line is `line` (or the closest one above it). */
-  const anchorForLine = (line) => {
-    let found = null;
-    let first = null;
-    for (const el of anchors()) {
-      const value = anchorLine(el);
-      if (!value) continue;
-      if (!first) first = el;
-      if (value <= line) found = el;
-      else break;
+  /**
+   * Fractional line to pixels, interpolated between the blocks we know about.
+   * Lines between two anchors are spread proportionally, which is the
+   * correspondence a reader expects: a block twice as tall covers twice as many
+   * source lines. Nothing here is rounded to a block edge, so a position that
+   * travels to the editor and back lands where it started.
+   */
+  const lineToPixels = (line, table) => {
+    if (!table.length) return 0;
+    const first = table[0];
+    if (line <= first.line) return first.top;
+    for (let i = 1; i < table.length; i += 1) {
+      const a = table[i - 1];
+      const b = table[i];
+      if (line <= b.line) {
+        const span = b.line - a.line || 1;
+        return a.top + ((line - a.line) / span) * (b.top - a.top);
+      }
     }
-    return found || first;
+    const last = table[table.length - 1];
+    const prev = table[table.length - 2] || last;
+    const perLine =
+      last.line > prev.line
+        ? (last.top - prev.top) / (last.line - prev.line)
+        : last.height || 20;
+    return last.top + (line - last.line) * (perLine > 0 ? perLine : 20);
+  };
+
+  /** Inverse of `lineToPixels`: the fractional source line at pixel offset `y`. */
+  const pixelsToLine = (y, table) => {
+    if (!table.length) return 1;
+    const first = table[0];
+    if (y <= first.top) return first.line;
+    for (let i = 1; i < table.length; i += 1) {
+      const a = table[i - 1];
+      const b = table[i];
+      if (y <= b.top) {
+        const span = b.top - a.top || 1;
+        return a.line + ((y - a.top) / span) * (b.line - a.line);
+      }
+    }
+    const last = table[table.length - 1];
+    const prev = table[table.length - 2] || last;
+    const perPixel =
+      last.top > prev.top ? (last.line - prev.line) / (last.top - prev.top) : 0;
+    return last.line + (y - last.top) * (perPixel > 0 ? perPixel : 1 / 20);
   };
 
   // Suppress only the echo of our own write: the event carries the exact value
@@ -369,35 +398,31 @@ export function createPreview(opts) {
     expectedScrollTop = container.scrollTop;
   };
 
-  /** Put `line` at the top edge, `frac` of the way into that block. */
-  const scrollToLine = (line, frac = 0) => {
-    if (mode !== "markdown") return;
-    syncSeq += 1;
-    const wanted = Math.round(line) || 1;
-    currentAnchor = { line: wanted, frac: Math.min(1, Math.max(0, frac)) };
-    const el = anchorForLine(wanted);
-    if (!el) return;
-    const height = el.offsetHeight || 0;
-    setScrollTop(anchorTop(el) + currentAnchor.frac * height);
+  const restoreToLine = (line) => {
+    if (!Number.isFinite(line)) return;
+    setScrollTop(lineToPixels(line, positionTable()));
   };
 
-  const restoreAfterRender = (anchor) => {
-    if (!anchor) return;
-    const el = anchorForLine(anchor.line);
-    if (!el) return;
-    setScrollTop(anchorTop(el) + anchor.frac * (el.offsetHeight || 0));
+  /** Put the fractional source line `line` at the top edge. */
+  const scrollToLine = (line) => {
+    if (mode !== "markdown") return;
+    const value = Number(line);
+    if (!Number.isFinite(value)) return;
+    syncSeq += 1;
+    currentLine = value;
+    restoreToLine(value);
   };
 
   /**
    * Late layout changes (images decoding, diagrams rendering) move the text the
-   * reader is looking at. Re-anchor after each of them — but never fight a
-   * scroll the user has just made themselves.
+   * reader is looking at. Re-anchor after each of them, but never fight a scroll
+   * the reader has just made themselves.
    */
-  const restoreLater = (anchor) => {
-    const wanted = currentAnchor || anchor;
-    if (!wanted) return;
+  const restoreLater = (line) => {
+    const wanted = Number.isFinite(currentLine) ? currentLine : line;
+    if (!Number.isFinite(wanted)) return;
     if (performance.now() - lastUserScrollAt < 700) return;
-    restoreAfterRender(wanted);
+    restoreToLine(wanted);
   };
 
   // Missing assets are reported even when there is no anchor to hold, so the sweep
@@ -425,7 +450,7 @@ export function createPreview(opts) {
     renderToken += 1;
     const token = renderToken;
     mode = "markdown";
-    const keep = anchorAtTop();
+    const keep = pixelsToLine(container.scrollTop, positionTable());
     // Swapping the subtree collapses the scroll box and fires its own scroll
     // event; ignore scrolling until the reader is put back.
     renderGuardUntil = performance.now() + 150;
@@ -444,9 +469,10 @@ export function createPreview(opts) {
       return;
     }
     container.innerHTML = DOMPurify.sanitize(html, PURIFY_CONFIG);
-    if (seq === syncSeq) currentAnchor = keep;
-    restoreAfterRender(currentAnchor || keep);
-    reanchorOnMedia(currentAnchor || keep);
+    if (seq === syncSeq) currentLine = keep;
+    const aimed = Number.isFinite(currentLine) ? currentLine : keep;
+    restoreToLine(aimed);
+    reanchorOnMedia(aimed);
     renderMermaid(container)
       .then(() => {
         // Diagrams swap in asynchronously and change the page height, so the
@@ -469,12 +495,13 @@ export function createPreview(opts) {
       }
       expectedScrollTop = null;
     }
-    const anchor = anchorAtTop();
-    if (!anchor) return;
+    const table = positionTable();
+    if (!table.length) return;
+    const line = pixelsToLine(container.scrollTop, table);
     syncSeq += 1;
-    currentAnchor = { line: anchor.line, frac: anchor.frac };
+    currentLine = line;
     lastUserScrollAt = performance.now();
-    if (onScroll) onScroll(currentAnchor);
+    if (onScroll) onScroll({ line });
   };
   container.addEventListener("scroll", onScrollEvent, { passive: true });
 
@@ -526,7 +553,7 @@ export function createPreview(opts) {
         message || "无可预览内容",
       )}</div>${hint ? `<div class="preview-empty-hint">${escapeHtml(hint)}</div>` : ""}</div>`;
     },
-    /** Follow the editor: put `line` (1-based) at the top, `frac` into it. */
+    /** Follow the editor: put the fractional source line `line` at the top. */
     scrollToLine,
     destroy() {
       container.removeEventListener("scroll", onScrollEvent);

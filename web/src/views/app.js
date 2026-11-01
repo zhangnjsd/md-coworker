@@ -689,15 +689,16 @@ export function mountApp(host, opts) {
 
   let scrollSyncOn = lsGet(LS.scrollSync, "1") !== "0";
 
-  // Both editors debounce their own programmatic scrolls, so the two panes can
-  // hand positions to each other without a lock or an echo loop.
+  // Each pane suppresses the echo of its own programmatic writes, so positions
+  // can be handed back and forth without an echo loop — and without a lock,
+  // which would otherwise swallow the reader's next scroll on the other side.
   const preview = createPreview({
     container: previewHost,
-    onScroll: ({ line, frac }) => {
+    onScroll: ({ line }) => {
       if (!scrollSyncOn || !state.editor) return;
       if (!isMarkdownPath(state.currentPath)) return;
       if (typeof state.editor.scrollToLine !== "function") return;
-      state.editor.scrollToLine(line, frac);
+      state.editor.scrollToLine(line);
     },
   });
 
@@ -1496,9 +1497,9 @@ export function mountApp(host, opts) {
             renderCursor(pos);
             collab.reportPresence(pos, 0);
           },
-          onScroll: ({ line, frac }) => {
+          onScroll: ({ line }) => {
             if (!scrollSyncOn) return;
-            preview.scrollToLine(line, frac);
+            preview.scrollToLine(line);
           },
           onDocChange: () => markSaving(),
         });

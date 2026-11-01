@@ -15,6 +15,9 @@
   line-height: 1.78;
   scrollbar-gutter: stable;
   container-type: inline-size;
+  /* We restore the reading position ourselves after every re-render; the
+   * browser's own scroll anchoring would fight that and make the pane jitter. */
+  overflow-anchor: none;
 }
 
 .markdown-body {

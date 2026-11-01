@@ -161,7 +161,7 @@ const markdownHighlight = HighlightStyle.define([
  *   ytext: Y.Text,
  *   awareness: import('y-protocols/awareness').Awareness,
  *   onCursor?: (pos: {line: number, ch: number}) => void,
- *   onScroll?: (pos: {line: number, frac: number}) => void,
+ *   onScroll?: (pos: {line: number}) => void, // fractional source line
  *   onDocChange?: () => void,
  *   readOnly?: boolean,
  * }} opts
@@ -244,30 +244,31 @@ export function createMarkdownEditor(opts) {
     }),
   });
 
-  // Scroll linking is line based: a document ratio drifts badly once the source
-  // and the rendered page have different proportions, so both sides exchange
-  // (line, fraction-into-that-line) instead.
-  // Only the echo of our own write is ignored: the event carries the exact value
-  // we just set, while anything else is the reader scrolling.
-  let expectedScrollTop = null;
+  // Scroll linking exchanges a single fractional source line: `12.5` means "half
+  // way through line 12". A document ratio drifts badly once source and rendered
+  // page have different proportions, and rounding to whole lines makes the linked
+  // side jump a few pixels back and forth, so the position stays continuous here
+  // and the preview interpolates between its own anchors with the same numbers.
+  // Our own writes are ignored by position, not by pixels: placing a line far down
+  // the document takes two scroll steps (estimate, then the corrected one after
+  // CodeMirror measures the region), and both land on the line we were asked for.
+  // Comparing scroll pixels would mistake the stale event for the reader scrolling.
+  let aimedLine = null;
 
   const topLine = () => {
     const dom = view.scrollDOM;
     const block = view.lineBlockAtHeight(dom.scrollTop);
     const height = block.height || 1;
     const frac = Math.min(1, Math.max(0, (dom.scrollTop - block.top) / height));
-    return { line: view.state.doc.lineAt(block.from).number, frac };
+    const line = view.state.doc.lineAt(block.from).number;
+    return line + (line < view.state.doc.lines ? frac : 0);
   };
 
   const onScrollEvent = () => {
-    if (expectedScrollTop !== null) {
-      if (Math.abs(view.scrollDOM.scrollTop - expectedScrollTop) <= 2) {
-        expectedScrollTop = null;
-        return;
-      }
-      expectedScrollTop = null;
-    }
-    if (onScroll) onScroll(topLine());
+    const line = topLine();
+    if (aimedLine !== null && Math.abs(line - aimedLine) <= 0.75) return;
+    aimedLine = null;
+    if (onScroll) onScroll({ line });
   };
   view.scrollDOM.addEventListener("scroll", onScrollEvent, { passive: true });
 
@@ -297,17 +298,21 @@ export function createMarkdownEditor(opts) {
       view.focus();
       return true;
     },
-    /** Follow the preview: put `line` (1-based) at the top, `frac` into it. */
-    scrollToLine(line, frac = 0) {
+    /** Follow the preview: put the fractional source line `line` at the top. */
+    scrollToLine(line) {
+      const value = Number(line);
+      if (!Number.isFinite(value)) return;
       const total = view.state.doc.lines;
-      const lineNo = Math.min(Math.max(1, Math.round(line) || 1), total);
-      const block = view.lineBlockAt(view.state.doc.line(lineNo).from);
-      const target =
-        block.top + Math.min(1, Math.max(0, frac)) * (block.height || 0);
-      const dom = view.scrollDOM;
-      const max = dom.scrollHeight - dom.clientHeight;
-      dom.scrollTop = max > 0 ? Math.min(max, Math.max(0, target)) : 0;
-      expectedScrollTop = dom.scrollTop;
+      const lineNo = Math.min(Math.max(1, Math.floor(value)), total);
+      const info = view.state.doc.line(lineNo);
+      const frac = Math.min(1, Math.max(0, value - lineNo));
+      // Inside the line the position is picked by character, which is as fine as
+      // the editor itself can express and keeps the preview's scroll continuous.
+      const pos = info.from + Math.round(frac * info.length);
+      aimedLine = value;
+      view.dispatch({
+        effects: EditorView.scrollIntoView(pos, { y: "start" }),
+      });
     },
 
     /**
