@@ -754,6 +754,11 @@ export function mountApp(host, opts) {
     pdfBtn.disabled = true;
     pdfBtn.classList.add("is-busy");
     pdfSpan.textContent = "导出中…";
+    // A tall preview keeps the main thread busy while it is photographed; say so
+    // rather than let the workspace look frozen.
+    if (previewHost.scrollHeight > 6000) {
+      toastInfo("文档较长，导出需要几秒，请不要重复点击");
+    }
     try {
       const { exportMarkdownPdf, pdfFileName } =
         await import("../editor/pdf.js");

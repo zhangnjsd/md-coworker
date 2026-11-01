@@ -68,36 +68,72 @@ let mermaidCounter = 0;
 
 // Mermaid is ~2.7MB, so load it on demand only when ```mermaid really appears in a document.
 let mermaidLoader = null;
+/** Config the preview draws with: the workspace is a dark surface. */
+const MERMAID_DARK = {
+  startOnLoad: false,
+  theme: "dark",
+  securityLevel: "strict",
+  fontFamily: "'Geist Variable','PingFang SC','Noto Sans CJK SC',sans-serif",
+  themeVariables: {
+    background: "#1d2227",
+    mainBkg: "#20262c",
+    primaryColor: "#20262c",
+    primaryTextColor: "#ebeff2",
+    primaryBorderColor: "#343b43",
+    secondaryColor: "#2a3036",
+    tertiaryColor: "#191f25",
+    textColor: "#b3b8be",
+    lineColor: "#999fa6",
+    nodeBorder: "#343b43",
+    clusterBkg: "#191f25",
+    clusterBorder: "#252b31",
+    edgeLabelBackground: "#1d2227",
+    noteBkgColor: "#20262c",
+    noteTextColor: "#b3b8be",
+    noteBorderColor: "#343b43",
+  },
+};
+/**
+ * Config the PDF export draws with: the same diagrams on white paper. A
+ * diagram's colours live in its own <svg> stylesheet, and html2canvas
+ * rasterises that svg as an image, so no amount of page CSS can lighten a
+ * diagram drawn for the dark pane — it has to be drawn again.
+ */
+const MERMAID_PAPER = {
+  startOnLoad: false,
+  theme: "base",
+  securityLevel: "strict",
+  fontFamily: "'Geist Variable','PingFang SC','Noto Sans CJK SC',sans-serif",
+  themeVariables: {
+    background: "#ffffff",
+    mainBkg: "#ffffff",
+    primaryColor: "#ffffff",
+    primaryTextColor: "#0f141a",
+    primaryBorderColor: "#5b6673",
+    secondaryColor: "#f6f7f9",
+    tertiaryColor: "#f6f7f9",
+    textColor: "#0f141a",
+    lineColor: "#5b6673",
+    nodeBorder: "#5b6673",
+    clusterBkg: "#f6f7f9",
+    clusterBorder: "#ccd1d9",
+    edgeLabelBackground: "#ffffff",
+    noteBkgColor: "#f6f7f9",
+    noteTextColor: "#0f141a",
+    noteBorderColor: "#ccd1d9",
+  },
+};
+/** Longest a paper diagram may take before the export goes ahead without it. */
+const PAPER_DIAGRAM_TIMEOUT_MS = 15_000;
+/** Config currently handed to Mermaid, so a one-off render can put it back. */
+let appliedMermaidConfig = null;
 function loadMermaid() {
   if (!mermaidLoader) {
     mermaidLoader = import("mermaid")
       .then((mod) => {
         const mermaid = mod.default || mod;
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: "dark",
-          securityLevel: "strict",
-          fontFamily:
-            "'Geist Variable','PingFang SC','Noto Sans CJK SC',sans-serif",
-          themeVariables: {
-            background: "#1d2227",
-            mainBkg: "#20262c",
-            primaryColor: "#20262c",
-            primaryTextColor: "#ebeff2",
-            primaryBorderColor: "#343b43",
-            secondaryColor: "#2a3036",
-            tertiaryColor: "#191f25",
-            textColor: "#b3b8be",
-            lineColor: "#999fa6",
-            nodeBorder: "#343b43",
-            clusterBkg: "#191f25",
-            clusterBorder: "#252b31",
-            edgeLabelBackground: "#1d2227",
-            noteBkgColor: "#20262c",
-            noteTextColor: "#b3b8be",
-            noteBorderColor: "#343b43",
-          },
-        });
+        mermaid.initialize(MERMAID_DARK);
+        appliedMermaidConfig = MERMAID_DARK;
         return mermaid;
       })
       .catch((err) => {
@@ -277,6 +313,9 @@ async function renderMermaid(host) {
   for (const node of nodes) {
     const source = node.textContent || "";
     if (!source.trim()) continue;
+    // Mermaid replaces the text with an <svg>; keep the source so the PDF
+    // export can draw the same diagram on paper ink.
+    node.dataset.mermaidSrc = source;
     try {
       await mermaid.run({ nodes: [node], suppressErrors: true });
       node.classList.add("mermaid-rendered");
@@ -288,6 +327,44 @@ async function renderMermaid(host) {
       )}</pre><div class="mermaid-error-msg">${escapeHtml(String(err && err.message ? err.message : err))}</div>`;
       if (node.parentNode) node.parentNode.replaceChild(wrap, node);
     }
+  }
+}
+
+/**
+ * Draw every Mermaid block inside `root` again on paper ink.
+ *
+ * The browser's own pass targets the dark workspace, and its colours are baked
+ * into each svg, so the export re-renders from the stashed source with a light
+ * theme and then restores the preview config. A diagram that fails or hangs
+ * keeps whatever it had: a slightly dark picture beats a failed export.
+ * @param {HTMLElement} root
+ * @returns {Promise<void>}
+ */
+export async function renderPaperDiagrams(root) {
+  const nodes = [...root.querySelectorAll(".mermaid[data-mermaid-src]")];
+  if (!nodes.length) return;
+  let mermaid = null;
+  try {
+    mermaid = await loadMermaid();
+  } catch {
+    return;
+  }
+  for (const node of nodes) {
+    node.removeAttribute("data-processed");
+    node.classList.remove("mermaid-rendered");
+    node.textContent = node.dataset.mermaidSrc || "";
+  }
+  mermaid.initialize(MERMAID_PAPER);
+  try {
+    await Promise.race([
+      mermaid.run({ nodes, suppressErrors: true }),
+      new Promise((resolve) => setTimeout(resolve, PAPER_DIAGRAM_TIMEOUT_MS)),
+    ]);
+  } catch {
+    /* keep the dark diagrams rather than block the export */
+  } finally {
+    mermaid.initialize(appliedMermaidConfig || MERMAID_DARK);
+    appliedMermaidConfig = MERMAID_DARK;
   }
 }
 

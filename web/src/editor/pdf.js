@@ -17,6 +17,8 @@
 // below translates whatever else it finds.
 import html2pdfModule from "html2pdf.js";
 
+import { renderPaperDiagrams } from "./preview.js";
+
 // html2pdf ships a UMD bundle (no ESM build), so the interop shape varies.
 const html2pdf =
   html2pdfModule && html2pdfModule.default
@@ -27,14 +29,35 @@ const html2pdf =
 const PAPER_WIDTH_PX = 794;
 /** Never let one unreachable image hold the export hostage. */
 const IMAGE_TIMEOUT_MS = 4000;
-/** Above this height a 2× raster gets too big for a phone-class canvas budget. */
-const LONG_DOCUMENT_PX = 6000;
 /** Ink of the exported paper — plain hex, see the `onclone` hook below. */
 const PAPER_INK = "#0f141a";
-
+/**
+ * Most pixels one capture may fill. Browser canvases are capped by memory, and
+ * html2canvas walks the whole page in one go: a paper beyond this budget either
+ * grinds for minutes (the page looks frozen) or throws half way and leaves its
+ * container behind. Long papers therefore get a smaller raster, and absurd ones
+ * are refused up front with a message the reader can act on.
+ */
+const CANVAS_AREA_BUDGET = 60_000_000;
+/** Below this raster scale the glyphs stop being readable — refuse instead. */
+const MIN_SCALE = 1.1;
+/** Highest raster scale: beyond 2× the extra bytes buy nothing on paper. */
+const MAX_SCALE = 2;
+/**
+ * html2pdf's promise can stay pending for good when a capture dies inside its
+ * worker, which used to leave the export chip stuck on "导出中…" forever. The
+ * watchdog is what makes a failure recoverable.
+ */
+const EXPORT_TIMEOUT_MS = 60_000;
+/** A4 height at 96 dpi; only used to turn pixels into a page count for messages. */
+const PAPER_PAGE_PX = 1123;
+/** Everything html2canvas / html2pdf append to the live page while capturing. */
+const CAPTURE_NODE_SELECTOR =
+  ".pdf-stage, .html2pdf__container, .html2pdf__overlay, .html2canvas-container";
 
 /** Colour functions html2canvas' parser cannot read. */
-const MODERN_COLOUR = /oklch\(|oklab\(|color-mix\(|lab\(|lch\(|\d+\s+\d+\s+\d+\s*\//i;
+const MODERN_COLOUR =
+  /oklch\(|oklab\(|color-mix\(|lab\(|lch\(|\d+\s+\d+\s+\d+\s*\//i;
 /** Properties holding a single colour value. */
 const SINGLE_COLOUR_PROPS = [
   "color",
@@ -94,12 +117,14 @@ function normaliseCloneColours(clonedDoc) {
     const cs = view.getComputedStyle(node);
     for (const prop of SINGLE_COLOUR_PROPS) {
       const value = cs.getPropertyValue(prop);
-      if (value && MODERN_COLOUR.test(value)) style.setProperty(prop, toRgb(value), "important");
+      if (value && MODERN_COLOUR.test(value))
+        style.setProperty(prop, toRgb(value), "important");
     }
     // A shadow is a list with colours inside; the paper does not need them.
     for (const prop of MIXED_COLOUR_PROPS) {
       const value = cs.getPropertyValue(prop);
-      if (value && MODERN_COLOUR.test(value)) style.setProperty(prop, "none", "important");
+      if (value && MODERN_COLOUR.test(value))
+        style.setProperty(prop, "none", "important");
     }
     // Gradients would need token-by-token rewriting; the paper has none.
     for (const prop of IMAGE_PROPS) {
@@ -181,6 +206,71 @@ function buildPaper(source, title) {
   return { stage, paper };
 }
 
+/** Ownership token of the running export, so stale sweepers stay out of its way. */
+let exportSerial = 0;
+
+/**
+ * Remove what a capture appends to the live page. html2canvas renders through an
+ * iframe and html2pdf wraps the paper in a container; both clean up after a
+ * successful capture, but one that throws or times out leaves them behind —
+ * off-screen, invisible and yet in front of everything, which is what made the
+ * workspace look dead after a failed export.
+ * @param {Set<Element>} [preexisting] body children that must survive
+ */
+function sweepCaptureNodes(preexisting) {
+  for (const node of document.querySelectorAll(CAPTURE_NODE_SELECTOR)) {
+    node.remove();
+  }
+  if (!preexisting || !preexisting.size) return;
+  for (const node of [...document.body.children]) {
+    if (preexisting.has(node)) continue;
+    // html2canvas' own iframe is appended to the body and carries no marker.
+    if (node.tagName === "IFRAME") node.remove();
+  }
+}
+
+/**
+ * Resolve with `work`, or reject once it overstays. A promise that never settles
+ * is worse than an error: the caller's `finally` would never run, and the export
+ * chip would stay disabled for the rest of the session.
+ * @template T
+ * @param {PromiseLike<T>} work
+ * @param {number} ms
+ * @param {string} message
+ * @returns {Promise<T>}
+ */
+function withTimeout(work, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    Promise.resolve(work).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/** Most paper one capture can hold: past this the raster budget cannot be met. */
+const MAX_PAPER_HEIGHT_PX = Math.floor(
+  CANVAS_AREA_BUDGET / (PAPER_WIDTH_PX * MIN_SCALE * MIN_SCALE),
+);
+
+/**
+ * The refusal a too-tall document gets. Long papers are the one case this
+ * exporter cannot serve: they either freeze the tab for a minute or lose pages
+ * silently, so the reader is told what to do instead.
+ * @param {number} paperHeight pixels the paper would be tall
+ */
+function tooLongMessage(paperHeight) {
+  const pages = Math.max(1, Math.ceil(paperHeight / PAPER_PAGE_PX));
+  return `文档太长了（约 ${pages} 页），一次性导出会让浏览器卡住。请拆分文件后再导出。`;
+}
+
 /**
  * Render the preview to a PDF file and hand it to the browser's download UI.
  * @param {{ source: HTMLElement, filename?: string, title?: string }} opts
@@ -194,9 +284,24 @@ export async function exportMarkdownPdf(opts) {
   if (typeof html2pdf !== "function") {
     throw new Error("PDF 组件加载失败，请刷新页面重试");
   }
+  // Refuse before cloning a document no capture could hold: building its paper
+  // takes seconds on its own, which the reader experiences as the freeze this
+  // check exists to prevent.
+  if (source.scrollHeight + 160 > MAX_PAPER_HEIGHT_PX) {
+    throw new Error(tooLongMessage(source.scrollHeight + 160));
+  }
+
+  // A previous attempt may have died mid-capture, and its leftovers would sit on
+  // top of the page; start from a clean one.
+  sweepCaptureNodes();
+  const bodyKids = new Set(document.body.children);
+  const serial = ++exportSerial;
 
   const { stage, paper } = buildPaper(source, title);
   document.body.append(stage);
+  // Diagrams arrive drawn for the dark pane; draw them again on paper ink while
+  // the page is off-screen. Failing here leaves the dark ones in place.
+  await renderPaperDiagrams(paper);
 
   try {
     // Fonts and diagrams settle asynchronously; photographing too early gives
@@ -219,14 +324,24 @@ export async function exportMarkdownPdf(opts) {
       setTimeout(finish, 250);
     });
 
-    const tall = paper.scrollHeight > LONG_DOCUMENT_PX;
+    // Photographing the whole paper in one go is what makes a long document
+    // freeze the tab, so size the raster first and refuse the impossible cases
+    // while the page is still responsive.
+    const paperHeight = Math.max(paper.scrollHeight, 1);
+    const budgetScale = Math.sqrt(
+      CANVAS_AREA_BUDGET / (PAPER_WIDTH_PX * paperHeight),
+    );
+    if (budgetScale < MIN_SCALE) {
+      throw new Error(tooLongMessage(paperHeight));
+    }
+    const scale = Math.min(MAX_SCALE, Math.floor(budgetScale * 100) / 100);
     const options = {
       margin: [14, 14, 16, 14],
       filename,
       // JPEG keeps long documents to a few MB; text stays crisp at scale 2.
       image: { type: "jpeg", quality: 0.95 },
       html2canvas: {
-        scale: tall ? 1.6 : 2,
+        scale,
         backgroundColor: "#ffffff",
         useCORS: true,
         allowTaint: false,
@@ -283,23 +398,27 @@ export async function exportMarkdownPdf(opts) {
       },
     };
 
-    await html2pdf()
-      .set(options)
-      .from(paper)
-      .toPdf()
-      .get("pdf")
-      .then((pdf) => {
-        try {
-          pdf.setProperties({
-            title: title || filename,
-            subject: title || filename,
-            creator: "md-coworker",
-          });
-        } catch {
-          /* metadata is a nicety, never a reason to fail the export */
-        }
-      })
-      .save();
+    await withTimeout(
+      html2pdf()
+        .set(options)
+        .from(paper)
+        .toPdf()
+        .get("pdf")
+        .then((pdf) => {
+          try {
+            pdf.setProperties({
+              title: title || filename,
+              subject: title || filename,
+              creator: "md-coworker",
+            });
+          } catch {
+            /* metadata is a nicety, never a reason to fail the export */
+          }
+        })
+        .save(),
+      EXPORT_TIMEOUT_MS,
+      "导出超时了，已停止本次导出。文档较大时请拆分文件后再试。",
+    );
 
     return filename;
   } catch (err) {
@@ -310,6 +429,18 @@ export async function exportMarkdownPdf(opts) {
         : "导出 PDF 失败，请重试",
     );
   } finally {
+    // Leave the page exactly as it was found: a capture that dies half way
+    // leaves its stage, container and iframe behind, and those invisible nodes
+    // are what made the workspace look dead afterwards.
     stage.remove();
+    sweepCaptureNodes(bodyKids);
+    // A dead capture can still be running inside its worker and append its nodes
+    // a moment later, so sweep twice more — unless a newer export owns them.
+    for (const delay of [1000, 4000]) {
+      setTimeout(() => {
+        if (serial !== exportSerial) return;
+        sweepCaptureNodes(bodyKids);
+      }, delay);
+    }
   }
 }

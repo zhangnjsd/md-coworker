@@ -154,6 +154,11 @@
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.4 4.8 8.7 9.5 3.4' fill='none' stroke='%230b6f5f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
+/* Mermaid diagrams are re-tinted inside the export itself — their colours live
+ * in a stylesheet embedded in the SVG, which html2canvas rasterises as an image,
+ * so nothing here could reach them. See rethemeMermaidClone() in editor/pdf.js.
+ */
+
 /* Syntax palette for paper: light-theme hex twins of prose.css's oklch set. */
 .pdf-paper .hljs-comment,
 .pdf-paper .hljs-quote {

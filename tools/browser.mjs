@@ -1054,7 +1054,10 @@ async function main() {
     pdfBytes = await pageA.evaluate(async () => {
       if (!window.__pdfBlob) return null;
       const buffer = new Uint8Array(await window.__pdfBlob.arrayBuffer());
-      return { size: buffer.length, head: String.fromCharCode(...buffer.slice(0, 5)) };
+      return {
+        size: buffer.length,
+        head: String.fromCharCode(...buffer.slice(0, 5)),
+      };
     });
     if (pdfBytes) break;
     await sleep(500);
@@ -1064,7 +1067,11 @@ async function main() {
       .map((node) => node.textContent.trim())
       .join(" | "),
   );
-  check("导出 PDF 拿到了文件", !!pdfBytes, pdfBytes ? `${pdfBytes.size} 字节` : "没有产出");
+  check(
+    "导出 PDF 拿到了文件",
+    !!pdfBytes,
+    pdfBytes ? `${pdfBytes.size} 字节` : "没有产出",
+  );
   check("PDF 文件头正确", pdfBytes?.head === "%PDF-", pdfBytes?.head || "");
   // jsPDF saves through its own anchor, so the filename is proven by the toast.
   check(
@@ -1074,7 +1081,9 @@ async function main() {
   );
   check(
     "导出期间没有留下离屏纸张",
-    await pageA.evaluate(() => document.querySelectorAll(".pdf-stage").length === 0),
+    await pageA.evaluate(
+      () => document.querySelectorAll(".pdf-stage").length === 0,
+    ),
   );
 
   // Clean up through the API so repeated runs stay idempotent.
