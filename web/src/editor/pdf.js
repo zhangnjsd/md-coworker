@@ -9,6 +9,12 @@
 // The stylesheet that makes the paper white lives in ../styles/pdf.css and is
 // loaded with the workspace view; this module only builds the page and hands it
 // over.
+//
+// html2canvas is stricter than a browser: its colour parser reads hex/rgb()/
+// rgba()/hsl()/named only, and it gives up on a pseudo element whose `content`
+// is an empty string. Preview styles therefore avoid colour functions in the
+// parts that reach the paper (see styles/prose.css), and the `onclone` hook
+// below translates whatever else it finds.
 import html2pdfModule from "html2pdf.js";
 
 // html2pdf ships a UMD bundle (no ESM build), so the interop shape varies.
@@ -23,6 +29,88 @@ const PAPER_WIDTH_PX = 794;
 const IMAGE_TIMEOUT_MS = 4000;
 /** Above this height a 2× raster gets too big for a phone-class canvas budget. */
 const LONG_DOCUMENT_PX = 6000;
+/** Ink of the exported paper — plain hex, see the `onclone` hook below. */
+const PAPER_INK = "#0f141a";
+
+
+/** Colour functions html2canvas' parser cannot read. */
+const MODERN_COLOUR = /oklch\(|oklab\(|color-mix\(|lab\(|lch\(|\d+\s+\d+\s+\d+\s*\//i;
+/** Properties holding a single colour value. */
+const SINGLE_COLOUR_PROPS = [
+  "color",
+  "-webkit-text-fill-color",
+  "background-color",
+  "border-top-color",
+  "border-bottom-color",
+  "border-left-color",
+  "border-right-color",
+  "outline-color",
+  "text-decoration-color",
+  "text-emphasis-color",
+  "column-rule-color",
+  "caret-color",
+  "accent-color",
+  "fill",
+  "stroke",
+];
+/** Properties holding colours among other tokens, or images to drop. */
+const MIXED_COLOUR_PROPS = ["box-shadow", "text-shadow"];
+const IMAGE_PROPS = ["background-image"];
+
+/**
+ * Turn every modern colour function in the cloned document into sRGB through a
+ * canvas sample, so html2canvas can parse it. Only values it cannot read are
+ * touched, and only inside the throwaway clone.
+ * @param {Document} clonedDoc
+ */
+function normaliseCloneColours(clonedDoc) {
+  const view = clonedDoc.defaultView;
+  if (!view) return;
+  const canvas = clonedDoc.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return;
+  const cache = new Map();
+  const toRgb = (value) => {
+    if (cache.has(value)) return cache.get(value);
+    // Paint the colour, then read the pixel: exact sRGB, no maths on our side.
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = "rgba(0, 0, 0, 0)";
+    ctx.fillStyle = value;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    const out =
+      a === 255
+        ? `rgb(${r}, ${g}, ${b})`
+        : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
+    cache.set(value, out);
+    return out;
+  };
+
+  const visit = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    const style = node.style;
+    const cs = view.getComputedStyle(node);
+    for (const prop of SINGLE_COLOUR_PROPS) {
+      const value = cs.getPropertyValue(prop);
+      if (value && MODERN_COLOUR.test(value)) style.setProperty(prop, toRgb(value), "important");
+    }
+    // A shadow is a list with colours inside; the paper does not need them.
+    for (const prop of MIXED_COLOUR_PROPS) {
+      const value = cs.getPropertyValue(prop);
+      if (value && MODERN_COLOUR.test(value)) style.setProperty(prop, "none", "important");
+    }
+    // Gradients would need token-by-token rewriting; the paper has none.
+    for (const prop of IMAGE_PROPS) {
+      const value = cs.getPropertyValue(prop);
+      if (value && value !== "none" && MODERN_COLOUR.test(value))
+        style.setProperty(prop, "none", "important");
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(clonedDoc.body);
+}
 
 /**
  * `notes/todo.md` → `todo.pdf`. Characters a filesystem dislikes become dashes.
@@ -149,6 +237,30 @@ export async function exportMarkdownPdf(opts) {
           document.documentElement.clientWidth,
           PAPER_WIDTH_PX,
         ),
+        // html2canvas hands every colour it meets to its own small parser,
+        // which knows only hex/rgb()/rgba()/hsl()/named colours — while this
+        // design system is written in oklch() and mixes with color-mix().
+        // It clones the whole document, not just the paper, so the app shell
+        // around it reaches that parser too. Rather than ban colour functions
+        // from the design system, translate them: the browser itself converts
+        // any CSS Color 4 value to sRGB when it paints, so a 1×1 canvas is a
+        // reliable converter, and the result is cached per value.
+        onclone: (clonedDoc) => {
+          for (const node of [clonedDoc.documentElement, clonedDoc.body]) {
+            if (!node || !node.style) continue;
+            node.style.backgroundColor = "#ffffff";
+            node.style.color = PAPER_INK;
+          }
+          // html2canvas clones the whole page and walks the ancestors of the
+          // captured element, so the live shell's colours reach its parser
+          // even though only the paper is rendered. Hand the clone a body that
+          // holds nothing but the paper: same element, same geometry, no app.
+          const stage = clonedDoc.querySelector(".pdf-stage");
+          if (stage && stage.parentNode !== clonedDoc.body) {
+            clonedDoc.body.replaceChildren(stage);
+          }
+          normaliseCloneColours(clonedDoc);
+        },
       },
       jsPDF: {
         unit: "mm",

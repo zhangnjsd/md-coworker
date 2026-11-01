@@ -128,21 +128,17 @@
   vertical-align: -2px;
 }
 
+/* Plain rgba() and a background-image tick rather than color-mix() and an
+ * empty-content ::after: the PDF exporter rasterises this subtree through
+ * html2canvas, whose colour parser reads legacy syntax only and which cannot
+ * parse `content: ""` on a pseudo element at all. */
 .markdown-body .task-box:checked {
-  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
-  background: color-mix(in oklab, var(--accent) 18%, transparent);
-}
-
-.markdown-body .task-box:checked::after {
-  content: "";
-  position: absolute;
-  left: 3px;
-  top: 2px;
-  width: 5px;
-  height: 8px;
-  border-right: 2px solid var(--accent);
-  border-bottom: 2px solid var(--accent);
-  transform: rotate(38deg);
+  border-color: rgba(101, 221, 187, 0.55);
+  background-color: rgba(101, 221, 187, 0.18);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.4 4.8 8.7 9.5 3.4' fill='none' stroke='%2365ddbb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 11px 11px;
 }
 
 .markdown-body li::marker {
@@ -395,14 +391,14 @@
   margin: var(--sp-2) 0 0;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  color: color-mix(in oklab, var(--danger) 55%, var(--fg));
+  color: #f5aba9; /* danger mixed into fg, precomputed for the same parser */
   white-space: pre-wrap;
 }
 
 .mermaid-error-msg {
   margin-top: var(--sp-1);
   font-size: var(--fs-meta);
-  color: color-mix(in oklab, var(--danger) 60%, var(--fg-2));
+  color: #e08f8d;
 }
 
 .markdown-body .katex-display {

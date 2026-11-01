@@ -146,6 +146,14 @@
   display: none;
 }
 
+/* The screen rule tints the checked box with the dark-theme jade; on white
+ * paper it needs the paper's own tokens and a darker tick. */
+.pdf-paper .task-box:checked {
+  border-color: var(--accent-line);
+  background-color: var(--accent-soft);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.4 4.8 8.7 9.5 3.4' fill='none' stroke='%230b6f5f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
 /* Syntax palette for paper: light-theme hex twins of prose.css's oklch set. */
 .pdf-paper .hljs-comment,
 .pdf-paper .hljs-quote {
@@ -223,6 +231,15 @@
 .pdf-paper figure,
 .pdf-paper blockquote,
 .pdf-paper img {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* Cutting a paragraph in two leaves half a line of glyphs on both pages, so a
+ * paragraph or list item moves whole to the next page; one longer than a page
+ * still splits, because nothing else is possible. */
+.pdf-paper p,
+.pdf-paper li {
   break-inside: avoid;
   page-break-inside: avoid;
 }
