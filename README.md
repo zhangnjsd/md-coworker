@@ -21,13 +21,13 @@ Axum (0.8) ── yrs 文档房间 ── 400ms 防抖保存 ──▶ 工作区
 ## 快速开始
 
 ```bash
-# 用 just（推荐）
+# just（推荐）
 just install     # 前端 + 测试脚本依赖
 just web         # 构建前端产物到 web/dist
 just db-up       # 启动项目自带的 PostgreSQL 集群（首次会 initdb + createdb）
 just run         # release 构建并启动；第一个参数就是工作区目录
 
-# 或者直接手敲
+# 或
 cd web && npm install && npm run build && cd ..
 DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
   cargo run --release -- ./demo-workspace --bind 127.0.0.1:3000
@@ -120,23 +120,23 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 | --- | --- | --- |
 | `users` | 用户名、角色、presence 颜色、公钥、加密的 TOTP 种子 | 管理员删除 |
 | `sessions` | 会话令牌的 SHA-256、创建/过期时间 | 过期即失效，后台 10 分钟回收 |
-| `challenges` | 登录挑战 nonce（一次性） | 验签后立即删除 |
+| `challenges` | 登录 nonce | 验签后立即删除 |
 | `mfa_tickets` | 通过第一因子后签发的 2FA 票据 | 用完即删 / 5 分钟过期 |
-| `settings` | 管理员可调的运行时配置（当前是上传大小上限） | 有默认值，随时可改 |
+| `settings` | 管理员可调的运行时配置 | 有默认值，随时可改 |
 
 表结构由 `src/db.rs` 里的 `CREATE TABLE IF NOT EXISTS` 在启动时保证，`just db-status` 可以随时查看。
 
 ## 界面
 
-| 登录 | 工作区（三人在同一份文档里） |
+| 登录 | 工作区 |
 | --- | --- |
 | ![登录](docs/screenshots/login.png) | ![工作区](docs/screenshots/editor.png) |
 
-| 代码文件（Monaco） | 设置 |
+| 代码文件 | 设置 |
 | --- | --- |
 | ![代码](docs/screenshots/code.png) | ![设置](docs/screenshots/settings.png) |
 
-| 拖拽上传 | 管理后台（含上传上限） |
+| 拖拽上传 | 管理后台 |
 | --- | --- |
 | ![上传](docs/screenshots/upload.png) | ![后台](docs/screenshots/admin.png) |
 
@@ -144,36 +144,35 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 
 ```
 src/
-  main.rs       启动、管理员初始化、优雅退出
-  config.rs     命令行参数与目录/主密钥
-  error.rs      anyhow 封装为 HTTP 响应
-  crypto.rs     HKDF / AES-256-GCM / Ed25519 / base32 / TOTP
-  db.rs         sqlx + PostgreSQL：用户、会话、挑战、2FA 票据（启动时建表）
-  auth.rs       登录、2FA、密钥轮换
+  main.rs       主程序
+  config.rs     设置
+  error.rs      错误封装
+  crypto.rs     加密封装
+  db.rs         数据库操作
+  auth.rs       鉴权
   admin.rs      用户管理
   files.rs      工作区文件树与读写
   upload.rs     流式上传与 /api/raw 原始资源
-  settings.rs   管理员可调的运行时配置
-  collab.rs     WebSocket + yrs 文档房间 + 保存 + presence
+  settings.rs   运行时配置
+  collab.rs     WebSocket 处理与保存
   api.rs        路由装配、静态资源托管
 web/            前端
-tools/          端到端冒烟测试、真浏览器测试、截图
+tools/          测试工具
 docs
-  protocol.md   前后端协议契约
+  protocol.md   协议描述
 docs
-  design.md     前端视觉/交互规范
+  design.md     前端设计规范
 ```
 
 ## 测试
 
 ```bash
-just test        # 单元测试：HKDF / AES / Ed25519 / base32 / TOTP
-just smoke       # 端到端接口 + WebSocket：登录、文件、双客户端协作、presence、2FA、密钥轮换
-just browser     # Chromium 双窗口：登录、预览渲染、实时同步、在线面板、撤销隔离
+just test        # 单元测试
+just smoke       # 冒烟测试
+just browser     # 浏览器渲染测试
 ```
 
-`smoke` / `browser` 需要服务已在 `BIND` 上运行，
-并先 `just install` 装好 `web/` 与 `tools/` 的 npm 依赖。
+`smoke` / `browser` 需要服务已在 `BIND` 上运行，并先 `just install` 装好 `web/` 与 `tools/` 的 npm 依赖。
 
 ## 常用命令
 
@@ -194,6 +193,6 @@ just db-up       # 启动本地 PostgreSQL
 just db-down     # 停止本地集群
 just db-status   # 查询表和用户数量
 just db-psql     # 手动查表
-just db-reset    # 丢掉本地集群重建（清空所有用户）
-just clean       # 停库 + cargo clean + 删除 web/dist 与 data
+just db-reset    # 重置数据库
+just clean       # 清理
 ```
