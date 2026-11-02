@@ -250,13 +250,6 @@ select.input {
   color: var(--accent);
 }
 
-/* Third warn-flavoured badge ("未启用"): same family as .badge-admin. */
-.badge-warn {
-  background: var(--warn-soft);
-  border-color: var(--warn-line);
-  color: var(--warn);
-}
-
 .badge-muted {
   background: transparent;
   border-color: var(--line);

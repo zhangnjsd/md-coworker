@@ -1,13 +1,15 @@
 // Monaco editor pane for non-markdown source files, collaborative through y-monaco.
-import * as monaco from "monaco-editor/esm/vs/editor/edcore.main.js";
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import * as Y from "yjs";
 import { MonacoBinding } from "y-monaco";
-
-// Only the plain editor worker is needed (no TS/JSON/CSS language services).
-self.MonacoEnvironment = {
-  getWorker: () => new EditorWorker(),
-};
+import {
+  MC_FONT_FAMILY,
+  MC_FONT_SIZE,
+  MC_LINE_HEIGHT,
+  MC_THEME,
+  createRemoteCursorPainter,
+  ensureEditorTheme,
+  monaco,
+} from "./monaco-shared.js";
 
 // Syntax highlighting is provided by lazily loaded basic-language tokenizers.
 import "monaco-editor/esm/vs/basic-languages/rust/rust.contribution.js";
@@ -36,45 +38,6 @@ import "monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution.
 import "monaco-editor/esm/vs/basic-languages/bat/bat.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js";
-
-monaco.editor.defineTheme("mc-dark", {
-  base: "vs-dark",
-  inherit: true,
-  rules: [
-    { token: "", foreground: "b3b8be" },
-    { token: "comment", foreground: "7d848c", fontStyle: "italic" },
-    { token: "keyword", foreground: "d5a5eb" },
-    { token: "string", foreground: "a1dca2" },
-    { token: "number", foreground: "f9c191" },
-    { token: "type", foreground: "89dae3" },
-    { token: "identifier", foreground: "b3b8be" },
-    { token: "delimiter", foreground: "999fa6" },
-  ],
-  colors: {
-    "editor.background": "#11151a",
-    "editor.foreground": "#ebeff2",
-    "editor.lineHighlightBackground": "#ffffff06",
-    "editorLineNumber.foreground": "#6b737b",
-    "editorLineNumber.activeForeground": "#b3b8be",
-    "editor.selectionBackground": "#65ddbb38",
-    "editor.inactiveSelectionBackground": "#65ddbb1f",
-    "editorCursor.foreground": "#65ddbb",
-    "editorIndentGuide.background1": "#252b31",
-    "editorIndentGuide.activeBackground1": "#343b43",
-    "editorGutter.background": "#11151a",
-    "editor.widget.background": "#20262c",
-    "editorWidget.background": "#20262c",
-    "editorWidget.border": "#343b43",
-    "editorSuggestWidget.background": "#20262c",
-    "editorSuggestWidget.border": "#343b43",
-    "editorSuggestWidget.selectedBackground": "#23272c",
-    "editorHoverWidget.background": "#20262c",
-    "editorHoverWidget.border": "#343b43",
-    "scrollbarSlider.background": "#343b4380",
-    "scrollbarSlider.hoverBackground": "#343b43cc",
-    "minimap.background": "#11151a",
-  },
-});
 
 const LANG_BY_EXT = {
   rs: "rust",
@@ -136,101 +99,6 @@ export function languageForPath(path) {
   return LANG_BY_EXT[ext] || "plaintext";
 }
 
-export function isMarkdownPath(path) {
-  return /\.(md|markdown)$/i.test(String(path || ""));
-}
-
-// ---------------------------------------------------------------------------
-// Remote cursor styling: y-monaco only adds CSS classes, the colours and name
-// labels have to be generated from the awareness states.
-const STYLE_ID = "mc-monaco-remote-cursors";
-function ensureStyleNode() {
-  let node = document.getElementById(STYLE_ID);
-  if (!node) {
-    node = document.createElement("style");
-    node.id = STYLE_ID;
-    document.head.appendChild(node);
-  }
-  return node;
-}
-
-// Awareness payloads are attacker controlled (any room member can publish any
-// colour/name), so nothing from them may reach the stylesheet unvalidated.
-const CURSOR_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
-const DEFAULT_CURSOR_COLOR = "#8dcdbb";
-
-/** Only accept a literal #rrggbb, otherwise fall back to the house colour. */
-function safeCursorColor(value) {
-  const raw = typeof value === "string" ? value.trim() : "";
-  return CURSOR_COLOR_RE.test(raw) ? raw : DEFAULT_CURSOR_COLOR;
-}
-
-function escapeCssText(value) {
-  return (
-    String(value)
-      .replace(/["\\]/g, "\\$&")
-      .replace(/\n/g, " ")
-      // `}`/`<`/`>`/`;` have no business inside a CSS string and are dropped
-      // outright so a crafted name cannot close the rule or the style element.
-      .replace(/[<>{};]/g, "")
-  );
-}
-
-/**
- * @param {import('y-protocols/awareness').Awareness} awareness
- * @param {number} ownClientId
- */
-function createCursorPainter(awareness, ownClientId) {
-  const node = ensureStyleNode();
-  let last = "";
-  const paint = () => {
-    const chunks = [];
-    awareness.getStates().forEach((state, clientID) => {
-      if (clientID === ownClientId) return;
-      const user = state.user || {};
-      const color = safeCursorColor(user.color);
-      const name = escapeCssText(user.name || "匿名");
-      chunks.push(
-        `.monaco-editor .yRemoteSelection-${clientID} { background: ${hexToRgba(color, 0.26)}; }`,
-        `.monaco-editor .yRemoteSelectionHead-${clientID} { border-left: 2px solid ${color}; }`,
-        `.monaco-editor .yRemoteSelectionHead-${clientID}::after { content: "${name}"; background: ${color}; }`,
-      );
-    });
-    const css = chunks.join("\n");
-    if (css === last) return;
-    last = css;
-    node.textContent = css;
-  };
-  paint();
-  const handler = (_changes, origin) => {
-    if (origin) paint();
-  };
-  awareness.on("change", handler);
-  return {
-    destroy() {
-      awareness.off("change", handler);
-      node.textContent = "";
-    },
-  };
-}
-
-function hexToRgba(hex, alpha) {
-  // Callers pass a value that already went through safeCursorColor().
-  const value = String(hex || DEFAULT_CURSOR_COLOR).replace("#", "");
-  const full =
-    value.length === 3
-      ? value
-          .split("")
-          .map((c) => c + c)
-          .join("")
-      : value;
-  const num = parseInt(full.slice(0, 6) || "8dcdbb", 16);
-  const r = (num >> 16) & 255;
-  const g = (num >> 8) & 255;
-  const b = num & 255;
-  return `rgba(${r},${g},${b},${alpha})`;
-}
-
 /**
  * @param {{
  *   parent: HTMLElement,
@@ -253,18 +121,18 @@ export function createCodeEditor(opts) {
     readOnly = false,
   } = opts;
   const language = languageForPath(path);
+  ensureEditorTheme();
 
   const editor = monaco.editor.create(parent, {
     value: "",
     language,
-    theme: "mc-dark",
+    theme: MC_THEME,
     automaticLayout: true,
     minimap: { enabled: false },
-    fontSize: 13.5,
-    fontFamily:
-      "'Geist Mono Variable', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    fontSize: MC_FONT_SIZE,
+    fontFamily: MC_FONT_FAMILY,
     fontLigatures: true,
-    lineHeight: 23,
+    lineHeight: MC_LINE_HEIGHT,
     renderLineHighlight: "all",
     scrollBeyondLastLine: true,
     smoothScrolling: true,
@@ -283,7 +151,7 @@ export function createCodeEditor(opts) {
   editor.setModel(model);
 
   const binding = new MonacoBinding(ytext, model, new Set([editor]), awareness);
-  const painter = createCursorPainter(awareness, ytext.doc.clientID);
+  const painter = createRemoteCursorPainter(awareness, ytext.doc.clientID);
 
   // y-monaco publishes `selection`; `cursor` is what presence and the peer
   // panel read, so both dialects are kept in the awareness state.
@@ -310,7 +178,13 @@ export function createCodeEditor(opts) {
       }
     }
     const pos = sel.getPosition();
-    onCursor && onCursor({ line: pos.lineNumber - 1, ch: pos.column - 1 });
+    if (onCursor && pos) {
+      const selection = Math.abs(
+        model.getOffsetAt(sel.getEndPosition()) -
+          model.getOffsetAt(sel.getStartPosition()),
+      );
+      onCursor({ line: pos.lineNumber - 1, ch: pos.column - 1, selection });
+    }
   });
 
   const scrollSub = onScroll

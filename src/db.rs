@@ -311,11 +311,15 @@ impl Db {
     }
 
     pub async fn set_role(&self, id: &str, role: Role) -> Result<()> {
-        sqlx::query("UPDATE users SET role = $2 WHERE id = $1")
+        let changed = sqlx::query("UPDATE users SET role = $2 WHERE id = $1")
             .bind(id)
             .bind(role.as_str())
             .execute(&self.pool)
-            .await?;
+            .await?
+            .rows_affected();
+        if changed == 0 {
+            bail!("用户不存在");
+        }
         Ok(())
     }
 

@@ -28,7 +28,7 @@ use aes_gcm::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha1::Sha1;
@@ -173,8 +173,10 @@ pub fn verify_signature(public_key_b64: &str, message: &[u8], signature_b64: &st
 
 /// Sign with a base64-encoded seed. Only used by the unit tests, which need to
 /// produce a signature the way the browser client does.
-#[allow(dead_code)]
-pub fn sign_with_seed_b64(seed_b64: &str, message: &[u8]) -> Result<String> {
+#[cfg(test)]
+fn sign_with_seed_b64(seed_b64: &str, message: &[u8]) -> Result<String> {
+    use ed25519_dalek::Signer;
+
     let raw = B64.decode(seed_b64.trim()).context("私钥 base64 非法")?;
     let seed: [u8; 32] = raw
         .as_slice()

@@ -33,13 +33,6 @@ export function colorLight(color, alpha = 0.22) {
   return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
 }
 
-/** Stronger tint, e.g. for presence chips. */
-export function colorSoft(color, alpha = 0.16) {
-  const rgb = parseHex(color);
-  if (!rgb) return "rgba(79,156,249,0.16)";
-  return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
-}
-
 export function lighten(color, amount = 0.45) {
   const rgb = parseHex(color);
   if (!rgb) return color;

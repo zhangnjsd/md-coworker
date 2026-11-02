@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 # --- web framework ---
 anyhow = "1"
-axum = { version = "0.8", features = ["ws", "macros", "json", "tokio", "multipart"] }
+axum = { version = "0.8", features = ["ws", "json", "tokio", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
@@ -27,7 +27,6 @@ sha2 = "0.11"
 sha1 = "0.11"
 hmac = "0.13"
 base64 = "0.23"
-subtle = "2"
 rand = "0.10"
 
 # --- storage (PostgreSQL) ---
@@ -35,15 +34,12 @@ sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "postgres",
-    "chrono",
-    "uuid",
     "macros",
 ] }
 
 # --- misc ---
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-walkdir = "2"
 percent-encoding = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

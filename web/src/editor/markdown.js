@@ -17,7 +17,6 @@ import {
   ensureEditorTheme,
   monaco,
 } from "./monaco-shared.js";
-import "../styles/monaco.css";
 
 const PADDING_TOP = 12;
 const PADDING_BOTTOM = 40;
@@ -136,8 +135,16 @@ export async function createMarkdownEditor(opts) {
     try {
       publishCursor();
       const pos = editor.getPosition();
-      if (pos && onCursor)
-        onCursor({ line: pos.lineNumber - 1, ch: pos.column - 1 });
+      if (pos && onCursor) {
+        const sel = editor.getSelection();
+        const selection = sel
+          ? Math.abs(
+              model.getOffsetAt(sel.getEndPosition()) -
+                model.getOffsetAt(sel.getStartPosition()),
+            )
+          : 0;
+        onCursor({ line: pos.lineNumber - 1, ch: pos.column - 1, selection });
+      }
     } finally {
       publishing = false;
     }

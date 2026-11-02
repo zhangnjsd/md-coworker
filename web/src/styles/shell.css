@@ -226,6 +226,10 @@ body > .mermaidTooltip {
   background: var(--warn);
 }
 
+.save-dot.is-unsaved {
+  background: var(--danger);
+}
+
 .save-text {
   font-variant-numeric: tabular-nums;
 }

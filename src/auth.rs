@@ -261,6 +261,11 @@ static AUTH_FAILURES: LazyLock<RateLimiter> =
 /// Challenge issue rate, process-wide: every challenge is a database row.
 static CHALLENGE_REQUESTS: LazyLock<RateLimiter> =
     LazyLock::new(|| RateLimiter::new(CHALLENGE_WINDOW, CHALLENGE_MAX_REQUESTS));
+/// TOTP codes submitted from an authenticated session (`/api/me/2fa/*`,
+/// `/api/me/keypair`), keyed like the login window. A six-digit code has a million
+/// values, so without this a stolen cookie could brute-force the second factor off.
+static TOTP_FAILURES: LazyLock<RateLimiter> =
+    LazyLock::new(|| RateLimiter::new(AUTH_WINDOW, AUTH_MAX_FAILURES));
 
 /// Rate-limit key for a username: usernames are case-insensitive, so variants must
 /// share one bucket.
@@ -293,14 +298,17 @@ pub async fn challenge(
     if username.is_empty() {
         return Err(AppError::bad_request("bad_request", "用户名不能为空"));
     }
-    let user = state
-        .db
-        .find_user_by_username(username)
-        .await?
-        .ok_or_else(|| {
+    let user = match state.db.find_user_by_username(username).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
             tracing::warn!(username = %username, "登录挑战被拒绝：用户不存在");
-            AppError::not_found("unknown_user", "用户不存在")
-        })?;
+            // Charge the failure to the requested name: otherwise an attacker could
+            // test usernames without ever touching the per-username window.
+            AUTH_FAILURES.record_failure(&rate_key(username)).await;
+            return Err(AppError::not_found("unknown_user", "用户不存在"));
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     let nonce = crypto::random_bytes(32);
     let challenge_id = state
@@ -468,11 +476,7 @@ pub async fn regenerate_own_keypair(
                 tracing::warn!(username = %auth.user.username, "密钥重置被拒绝：缺少动态验证码");
                 AppError::bad_request("mfa_required", "该账号已启用二次验证，请提供当前动态验证码")
             })?;
-        let secret = totp_secret(&state.cipher, &auth.user)?;
-        if !crypto::verify_totp(&secret, code) {
-            tracing::warn!(username = %auth.user.username, "密钥重置被拒绝：动态验证码不正确");
-            return Err(AppError::bad_request("bad_totp", "动态验证码不正确"));
-        }
+        verify_totp_checked(&state, &auth, code).await?;
     }
 
     let (private_key, public_key) = crypto::generate_keypair();
@@ -525,10 +529,7 @@ pub async fn totp_enable(
     if auth.user.totp_enabled {
         return Err(AppError::conflict("totp_enabled", "2FA 已启用"));
     }
-    let secret = totp_secret(&state.cipher, &auth.user)?;
-    if !crypto::verify_totp(&secret, &req.code) {
-        return Err(AppError::bad_request("bad_totp", "动态验证码不正确"));
-    }
+    verify_totp_checked(&state, &auth, &req.code).await?;
     state
         .db
         .set_totp(&auth.user.id, auth.user.totp_secret_enc.clone(), true)
@@ -550,10 +551,7 @@ pub async fn totp_disable(
     if !auth.user.totp_enabled {
         return Err(AppError::bad_request("totp_disabled", "2FA 未启用"));
     }
-    let secret = totp_secret(&state.cipher, &auth.user)?;
-    if !crypto::verify_totp(&secret, &req.code) {
-        return Err(AppError::bad_request("bad_totp", "动态验证码不正确"));
-    }
+    verify_totp_checked(&state, &auth, &req.code).await?;
     state.db.set_totp(&auth.user.id, None, false).await?;
     let user = state
         .db
@@ -562,6 +560,25 @@ pub async fn totp_disable(
         .context("用户消失")?;
     tracing::info!(user = %user.username, "关闭 2FA");
     Ok(Json(json!({ "user": UserDto::from(&user) })))
+}
+
+/// Verify a TOTP `code` supplied by a signed-in user, counting failures per username.
+async fn verify_totp_checked(
+    state: &AppState,
+    auth: &AuthUser,
+    code: &str,
+) -> Result<(), AppError> {
+    let key = rate_key(&auth.user.username);
+    TOTP_FAILURES.check(&key).await?;
+    let secret = totp_secret(&state.cipher, &auth.user)?;
+    if crypto::verify_totp(&secret, code) {
+        TOTP_FAILURES.forget(&key).await;
+        Ok(())
+    } else {
+        TOTP_FAILURES.record_failure(&key).await;
+        tracing::warn!(username = %auth.user.username, "动态验证码不正确");
+        Err(AppError::bad_request("bad_totp", "动态验证码不正确"))
+    }
 }
 
 // ---------------------------------------------------------------- internal helpers
@@ -625,7 +642,7 @@ mod tests {
 
     #[test]
     fn forwarded_proto_detects_https_hop_only() {
-        assert!(forwarded_proto_is_https(&headers(&[])) == false);
+        assert!(!forwarded_proto_is_https(&headers(&[])));
         assert!(forwarded_proto_is_https(&headers(&[(
             "x-forwarded-proto",
             "https"

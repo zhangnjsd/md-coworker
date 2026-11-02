@@ -23,7 +23,9 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-const SKIP_DIRS: [&str; 5] = [".git", "node_modules", "target", ".idea", ".vscode"];
+/// Directory names the tree never descends into. Hidden names (`.git`, `.idea`,
+/// `.vscode`, ...) are already rejected by `is_hidden`.
+const SKIP_DIRS: [&str; 2] = ["node_modules", "target"];
 
 /// Largest file `/api/file` and `/api/raw` will hand to a browser, in bytes.
 pub const MAX_READ_BYTES: u64 = 100 * 1024 * 1024;
@@ -123,10 +125,18 @@ pub fn canonicalize_lenient(path: &Path) -> std::io::Result<PathBuf> {
     path.canonicalize()
 }
 
-/// Normalize into a POSIX relative path (strips leading `./` and `/`).
+/// Normalize into a canonical POSIX relative path.
+///
+/// Leading `./` and `/`, repeated separators, trailing separators and `.` segments are
+/// dropped, so `./a//b/` and `a/b` are the same file — and therefore the same room key.
+/// `..` is preserved on purpose: `resolve` rejects it, and silently rewriting it here
+/// would hide a malformed request.
 pub fn normalize_rel(rel: &str) -> String {
-    let trimmed = rel.trim().trim_start_matches("./").trim_start_matches('/');
-    trimmed.to_string()
+    rel.trim()
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
@@ -163,7 +173,7 @@ struct TreeBudget {
 
 impl TreeBudget {
     /// Mark the tree as truncated, warning once about the limit that was hit.
-    fn truncate(&mut self, dir: &Path, limit: &str) {
+    fn truncate(&mut self, dir: &Path, limit: String) {
         if !self.truncated {
             tracing::warn!(
                 dir = %dir.display(),
@@ -188,7 +198,7 @@ fn walk_tree(
     budget: &mut TreeBudget,
 ) -> Result<Vec<Node>, AppError> {
     if depth >= MAX_TREE_DEPTH {
-        budget.truncate(dir, "depth=12");
+        budget.truncate(dir, format!("depth={MAX_TREE_DEPTH}"));
         return Ok(Vec::new());
     }
 
@@ -199,7 +209,7 @@ fn walk_tree(
     let mut entries: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
     for entry in read {
         if budget.entries >= MAX_TREE_ENTRIES {
-            budget.truncate(dir, "entries=5000");
+            budget.truncate(dir, format!("entries={MAX_TREE_ENTRIES}"));
             break;
         }
         let entry = entry.context("读取目录项失败").map_err(AppError::from)?;
@@ -312,7 +322,12 @@ pub struct FileQuery {
 
 pub async fn list_files(State(state): State<AppState>, _auth: AuthUser) -> ApiResult<Json<Value>> {
     let root = state.cfg.workspace.clone();
-    let tree = build_tree(&root, "")?;
+    // Walking the tree is blocking I/O over up to `MAX_TREE_ENTRIES` entries; running it
+    // on the runtime's worker threads would stall every other request.
+    let tree = tokio::task::spawn_blocking(move || build_tree(&root, ""))
+        .await
+        .context("文件树任务失败")
+        .map_err(AppError::from)??;
     Ok(Json(json!({ "tree": tree })))
 }
 
@@ -428,7 +443,7 @@ pub async fn rename_entry(
     // the "is anybody editing?" check and the rename below.
     let _from_lock = state.hub.lock_path(&from);
     let _to_lock = state.hub.lock_path(&to);
-    if state.hub.is_active(&from) || state.hub.is_active(&to) {
+    if state.hub.active_under(&from) || state.hub.active_under(&to) {
         return Err(AppError::conflict(
             "file_busy",
             "该文件正在被协作编辑，请等待所有人离开后再重命名",
@@ -458,7 +473,10 @@ pub async fn rename_entry(
     std::fs::rename(&abs_from, &abs_to)
         .with_context(|| format!("重命名失败: {from} -> {to}"))
         .map_err(AppError::from)?;
-    state.hub.forget_snapshot(&from);
+    // Both sides lose their snapshots: the source path no longer exists, and a snapshot
+    // left behind at the destination would be resurrected by the next join.
+    state.hub.forget_snapshot_tree(&from);
+    state.hub.forget_snapshot_tree(&to);
     Ok(Json(json!({ "path": to })))
 }
 
@@ -479,7 +497,7 @@ pub async fn delete_entry(
     // Hold the write lock across the "nobody is editing?" check and the removal, so a
     // connection cannot join the room between the two (TOCTOU).
     let _lock = state.hub.lock_path(&rel);
-    if state.hub.is_active(&rel) {
+    if state.hub.active_under(&rel) {
         return Err(AppError::conflict(
             "file_busy",
             "该文件正在被协作编辑，请等待所有人离开后再删除",
@@ -498,7 +516,7 @@ pub async fn delete_entry(
             .with_context(|| format!("删除文件失败: {rel}"))
             .map_err(AppError::from)?;
     }
-    state.hub.forget_snapshot(&rel);
+    state.hub.forget_snapshot_tree(&rel);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -507,6 +525,16 @@ pub async fn delete_entry(
 /// Binary files are rejected with `415 unsupported_media` rather than a bare 500, so the
 /// browser can explain that an image or an archive has no text to collaborate on.
 pub fn read_text_lossy(abs: &Path, rel: &str) -> Result<String, AppError> {
+    let len = std::fs::metadata(abs)
+        .with_context(|| format!("读取文件失败: {}", abs.display()))
+        .map_err(AppError::from)?
+        .len();
+    if len > MAX_READ_BYTES {
+        return Err(AppError::too_large(
+            "too_large",
+            format!("{rel} 超过 {} MiB，无法协作编辑", MAX_READ_BYTES / (1024 * 1024)),
+        ));
+    }
     let raw = std::fs::read(abs).with_context(|| format!("读取文件失败: {}", abs.display()))?;
     String::from_utf8(raw).map_err(|_| {
         AppError::new(

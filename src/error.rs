@@ -26,6 +26,11 @@ pub struct AppError {
 }
 
 impl AppError {
+    /// The human-readable message sent to clients (already localised, no internals).
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     pub fn new(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             status,
@@ -159,12 +164,4 @@ impl IntoResponse for AppError {
         }
         response
     }
-}
-
-/// Convenience macro: build a status-coded error inside a handler.
-#[macro_export]
-macro_rules! bail_status {
-    ($status:expr, $code:literal, $($arg:tt)*) => {
-        return Err($crate::error::AppError::new($status, $code, format!($($arg)*)))
-    };
 }

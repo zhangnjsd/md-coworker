@@ -129,9 +129,20 @@ pub async fn patch_user(
         state.db.set_role(&user.id, role).await?;
     }
 
-    if let Some(false) = req.twofa_enabled {
-        state.db.set_totp(&user.id, None, false).await?;
-        tracing::info!(actor = %admin.0.user.username, target = %user.username, "管理员强制重置 2FA");
+    match req.twofa_enabled {
+        Some(true) => {
+            // Switching 2FA on requires the user's own authenticator: silently ignoring
+            // the flag (the previous behaviour) looked like success and did nothing.
+            return Err(AppError::bad_request(
+                "bad_request",
+                "管理员只能关闭 2FA，启用需由用户本人完成",
+            ));
+        }
+        Some(false) => {
+            state.db.set_totp(&user.id, None, false).await?;
+            tracing::info!(actor = %admin.0.user.username, target = %user.username, "管理员强制重置 2FA");
+        }
+        None => {}
     }
 
     let updated = state.db.get_user(&user.id).await?.context("用户消失")?;

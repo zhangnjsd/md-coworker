@@ -11,7 +11,6 @@ import { privateKeyPanel } from "../ui/secret.js";
 import { toastError, toastSuccess } from "../ui/toast.js";
 import { button, el, fmtDateTime, iconButton } from "../util/dom.js";
 
-const ROLE_LABEL = { admin: "admin", user: "user" };
 
 /* Upload limit — the server stores bytes (docs/protocol.md §9.1), the UI speaks
  * MiB, so every value crossing the wire goes through these two helpers. */
@@ -102,11 +101,21 @@ export function mountAdmin(host, opts) {
         el("span", { class: "admin-chip-name", text: user.username }),
         el("span", {
           class: "badge badge-admin",
-          text: ROLE_LABEL[user.role] || "admin",
+          text: user.role || "admin",
         }),
       ),
       button("返回工作区", "ghost", () => onBack(), "btn-sm"),
-      button("退出登录", "ghost", () => onLogout(), "btn-sm"),
+      button(
+        "退出登录",
+        "ghost",
+        async () => {
+          // Only the server clears the session cookie; dropping local state alone leaves
+          // the account signed in and the next page load walks straight back in.
+          await api.logout().catch(() => {});
+          onLogout();
+        },
+        "btn-sm",
+      ),
     ),
   );
 
@@ -422,10 +431,20 @@ export function mountAdmin(host, opts) {
       el(
         "td",
         {},
-        el("span", {
-          class: `badge badge-${row.role === "admin" ? "admin" : "user"}`,
-          text: ROLE_LABEL[row.role] || "user",
-        }),
+        el(
+          "div",
+          { class: "admin-role" },
+          el("span", {
+            class: `badge badge-${row.role === "admin" ? "admin" : "user"}`,
+            text: row.role || "user",
+          }),
+          button(
+            row.role === "admin" ? "降为普通用户" : "设为管理员",
+            "ghost",
+            () => setRole(row, row.role === "admin" ? "user" : "admin"),
+            "btn-sm",
+          ),
+        ),
       ),
       el(
         "td",
@@ -662,6 +681,17 @@ export function mountAdmin(host, opts) {
       });
     } catch (err) {
       toastError(err.message || "重置密钥失败，请重试");
+    }
+  }
+
+  async function setRole(row, role) {
+    const label = role === "admin" ? "管理员" : "普通用户";
+    try {
+      await api.adminPatchUser(row.id, { role });
+      await loadUsers();
+      toastSuccess(`${row.username} 已设为${label}`);
+    } catch (err) {
+      toastError(err.message || "角色更新失败，请重试");
     }
   }
 

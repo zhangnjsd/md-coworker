@@ -170,7 +170,6 @@
 
 /* Screen-only affordances have no meaning on paper. */
 .pdf-paper .mermaid-hint,
-.pdf-paper .code-copy,
 .pdf-paper button {
   display: none;
 }

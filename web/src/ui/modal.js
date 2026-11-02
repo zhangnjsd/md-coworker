@@ -214,8 +214,6 @@ export function confirmDialog({
       ],
       onClose: () => finish(false),
     });
-    // keep a handle so callers can force-close from elsewhere
-    modal.card.dataset.confirm = "1";
   });
 }
 

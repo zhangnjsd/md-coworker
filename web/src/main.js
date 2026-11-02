@@ -51,10 +51,18 @@ function goLogin(message) {
   if (message) toastError(message);
 }
 
+/** Keys that describe the previous session's workspace, not the browser. */
+const SESSION_STORAGE_KEYS = ["mc.lastPath", "mc.tree.expanded"];
+
 function handleLogout() {
   currentUser = null;
   try {
-    localStorage.removeItem("mc.lastPath");
+    for (const key of SESSION_STORAGE_KEYS) localStorage.removeItem(key);
+    // Panel widths, collapsed rails and the last scroll position belong to the account
+    // that just left; the next login starts from the defaults.
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("mc.ui.")) localStorage.removeItem(key);
+    }
   } catch {
     /* ignore */
   }

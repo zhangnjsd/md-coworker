@@ -64,7 +64,6 @@ function taskListRule(state) {
 }
 md.core.ruler.push("task_lists", taskListRule);
 
-let mermaidCounter = 0;
 
 // Mermaid is ~2.7MB, so load it on demand only when ```mermaid really appears in a document.
 let mermaidLoader = null;
@@ -178,8 +177,7 @@ md.renderer.rules.fence = (tokens, idx) => {
   const line = token.map ? ` data-line="${token.map[0] + 1}"` : "";
 
   if (lang === "mermaid") {
-    mermaidCounter += 1;
-    return `<div class="mermaid-block"${line} data-mermaid="${mermaidCounter}"><div class="mermaid">${escapeHtml(
+    return `<div class="mermaid-block"${line}><div class="mermaid">${escapeHtml(
       code,
     )}</div><div class="mermaid-hint">Mermaid 图表</div></div>`;
   }

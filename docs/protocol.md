@@ -1,267 +1,498 @@
-# md-coworker 接口契约
+# md-coworker 接口协议
 
-> 本文件是前端与后端之间**唯一**的接口约定。任何一方改动都必须先改本文件。
-> 所有 HTTP 接口返回 JSON（除静态资源）；所有 HTTP 错误返回
-> `{"error":{"code":"...","message":"..."}}` 且带对应 HTTP 状态码。
-> 认证：登录成功后服务端下发 HttpOnly Cookie `mc_sid`，之后所有 `/api/*` 与 `/ws`
-> 都靠该 Cookie 认证；未登录返回 `401 {"error":{"code":"unauthorized"}}`。
-> 前端检测到 401 一律回到登录视图。
+本文件是前端（`web/`）与后端（`src/`）之间唯一的接口约定，描述 HTTP API、WebSocket 协作
+通道以及双方共享的数据格式与限制。协议变更必须同时更新本文件与两侧实现。
 
-## 0. 关键概念
+- 适用版本：`0.1.1`
+- 传输：HTTP/1.1 与 WebSocket，同源部署
+- 认证：会话 Cookie `mc_sid`，服务端只保存其 SHA-256 摘要
 
-- **工作区目录**：后端启动参数 `argv[1]`，例如 `./md-coworker ./workspace`。
-  所有文件 `path` 都是**相对工作区根目录的 POSIX 路径**（`/` 分隔，无前导 `/`，
-  不允许 `..`），例如 `notes/a.md`。
-- **用户名**：`^[a-zA-Z0-9_-]{2,32}$`，唯一，不区分大小写（统一以小写存比对）。
-- **用户角色**：`"admin"` | `"user"`。首个启动时自动创建 `admin` 管理员账号并**在
-  stdout 打印一次**其私钥（见 README）。
-- **用户对象** `User`：
-  ```json
-  {"id":"uuid","username":"alice","role":"user","color":"#4f9cf9",
-   "twofa_enabled":false,"created_at":"2026-10-30T12:00:00Z","online":false}
-  ```
-  `online` 仅管理员列表返回，其余场景可省略。
+## 0. 通用约定
 
-## 1. 认证（密钥对 + 可选 TOTP 2FA，无密码）
+### 0.1 路径
 
-私钥格式：**32 字节 Ed25519 seed 的 base64**（44 字符）。公钥：32 字节 base64。
-用户端用 `tweetnacl` 的 `nacl.sign.keyPair.fromSeed(seed)` 还原密钥对，
-用 `nacl.sign.detached(nonceBytes, keyPair.secretKey)` 生成 64 字节签名。
-私钥只在前端 `localStorage`（`mc.key.<username>`）保存。
+`path` 是工作区内的相对路径，采用 POSIX 形式：`/` 分隔、无前导 `/`、不含空字符，且不得
+出现 `..` 段。重复的 `/`、尾随 `/` 与 `.` 段属于等价写法，服务端会先折叠再处理；含 `..` 段
+或非法字符的路径返回 `400 bad_path`。工作区根目录以空字符串 `""` 表示，且不出现在文件树中。
 
-1. `POST /api/auth/challenge`
-   ```json
-   {"username":"alice"}
-   ```
-   → `200 {"challenge_id":"uuid","nonce":"<base64 32B>","expires_in":120}`
-   未知用户返回 `404 {"error":{"code":"unknown_user"}}`。
+以 `.` 开头的路径段（隐藏文件与隐藏目录）对 `path` 类接口一律拒绝，返回 `400 bad_path`；
+文件树与协作通道同样不暴露隐藏项。
 
-2. `POST /api/auth/login`
-   ```json
-   {"challenge_id":"uuid","signature":"<base64 64B>"}
-   ```
-   → 无 2FA：`200 {"status":"ok","user":User}`（并 `Set-Cookie: mc_sid=...`）
-   → 有 2FA：`200 {"status":"mfa_required","ticket":"uuid"}`（ticket 5 分钟有效）
-   → 签名错误：`401 {"error":{"code":"bad_signature"}}`
+### 0.2 JSON
 
-3. `POST /api/auth/mfa`
-   ```json
-   {"ticket":"uuid","code":"123456"}
-   ```
-   → `200 {"status":"ok","user":User}`（并下发 Cookie）；验证码错误 `401 bad_totp`。
+请求与响应体均为 UTF-8 JSON。除上传外，所有带请求体的接口要求
+`Content-Type: application/json`。
 
-4. `POST /api/auth/logout` → `200 {"ok":true}`（清 Cookie）
+时间字段：`mtime` 与 `ts` 为 Unix 毫秒整数，`created_at` 为 RFC 3339 字符串。
 
-5. `GET /api/me` → `200 {"user":User}` / `401`
+### 0.3 错误
 
-## 2. 账号自服务
+非 2xx 响应体统一为：
 
-- `POST /api/me/keypair` （重新生成自己的密钥对，旧公钥立即失效）
-  → `200 {"private_key":"<base64 32B>","public_key":"<base64 32B>"}`
-  前端拿到后立刻覆盖 `localStorage.mc.key.<username>`。
-- `POST /api/me/2fa/setup` → `200 {"secret":"<base32>","otpauth_url":"otpauth://totp/..."}`
-  （尚未启用，前端用 `qrcode` 渲染二维码 / 展示 secret）
-- `POST /api/me/2fa/enable` `{"code":"123456"}` → `200 {"user":User}`（twofa_enabled=true）
-- `POST /api/me/2fa/disable` `{"code":"123456"}` → `200 {"user":User}`
+```json
+{ "error": { "code": "bad_path", "message": "路径包含非法字符" } }
+```
 
-## 3. 管理员（role=admin，否则 403 forbidden）
+`code` 供程序判断，`message` 是可直接展示的中文说明。完整错误码见第 9 节。
 
-- `GET /api/admin/users` → `200 {"users":[User...]}`
-- `POST /api/admin/users` `{"username":"bob","role":"user"}`
-  → `200 {"user":User,"private_key":"<base64>","public_key":"<base64>"}`
-  **私钥仅此一次返回**，前端必须让管理员复制/下载。
-  重名 → `409 {"error":{"code":"user_exists"}}`。
-- `POST /api/admin/users/{id}/keypair` → 同上（重置他人密钥对）
-- `PATCH /api/admin/users/{id}` `{"role":"admin","twofa_enabled":false}`（字段皆可选）
-  → `200 {"user":User}`；`twofa_enabled:false` 表示管理员强制重置 2FA。
-- `DELETE /api/admin/users/{id}` → `200 {"ok":true}`（不能删除自己）
+### 0.4 用户对象
+
+```json
+{
+  "id": "3f2a…",
+  "username": "alice",
+  "role": "user",
+  "color": "#4f9cf9",
+  "twofa_enabled": false,
+  "created_at": "2026-01-01T00:00:00Z"
+}
+```
+
+`role` 为 `admin` 或 `user`；`color` 是服务端分配的展示色（`#rrggbb`）。管理员用户列表额外
+返回 `online`（布尔）。用户名规则为 `^[A-Za-z0-9_-]{2,32}$`，比较时不区分大小写。
+
+## 1. 认证
+
+密钥体系为 Ed25519。用户私钥是 32 字节 seed 的 Base64（44 字符），公钥是 32 字节 Base64。
+客户端用 `nacl.sign.detached(nonce, secretKey)` 生成签名，服务端用登记的公钥验签。私钥只保存
+在浏览器，服务端从不持有。
+
+会话 Cookie `mc_sid` 的属性为 `HttpOnly; SameSite=Lax; Path=/; Max-Age=<会话有效期>`；
+当请求带 `X-Forwarded-Proto: https` 或服务端以 `--secure-cookies` 启动时追加 `Secure`。
+默认有效期 7 天。退出登录或重置密钥后旧令牌立即失效。
+
+### 1.1 获取挑战
+
+```
+POST /api/auth/challenge
+{ "username": "alice" }
+```
+
+```json
+{ "challenge_id": "…", "nonce": "<base64>", "expires_in": 120, "has_2fa": true }
+```
+
+`nonce` 为 32 字节随机数，挑战 120 秒有效且一次性使用。`has_2fa` 用于让登录界面提前提示
+第二因子，除「是否启用 2FA」外不泄露其他信息。
+
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 400 | `bad_request` | 用户名为空 |
+| 404 | `unknown_user` | 用户不存在（同样计入该用户名的失败次数） |
+| 429 | `rate_limited` | 触发限流，响应带 `Retry-After` |
+
+### 1.2 登录
+
+```
+POST /api/auth/login
+{ "challenge_id": "…", "signature": "<base64>" }
+```
+
+第一因子通过且账号未启用 2FA 时下发会话 Cookie：
+
+```json
+{ "status": "ok", "user": { … } }
+```
+
+启用 2FA 时不下发 Cookie，改为返回 300 秒有效的一次性票据：
+
+```json
+{ "status": "mfa_required", "ticket": "…" }
+```
+
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 401 | `challenge_expired` | 挑战不存在、已使用或已过期 |
+| 401 | `unknown_user` | 挑战对应的用户已被删除 |
+| 401 | `bad_signature` | 签名校验失败 |
+| 429 | `rate_limited` | 触发限流，响应带 `Retry-After` |
+
+### 1.3 第二因子
+
+```
+POST /api/auth/mfa
+{ "ticket": "…", "code": "123456" }
+```
+
+成功返回 `{ "status": "ok", "user": { … } }` 并下发会话 Cookie。同一票据连续 5 次验证失败
+即作废，需重新登录。
+
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 401 | `mfa_expired` | 票据不存在、已作废或已过期 |
+| 400 | `bad_totp` | 验证码不正确 |
+| 429 | `rate_limited` | 触发限流，响应带 `Retry-After` |
+
+### 1.4 退出与当前用户
+
+| 接口 | 响应 |
+| --- | --- |
+| `POST /api/auth/logout` | `{ "ok": true }`，同时清除 Cookie 并删除会话 |
+| `GET /api/me` | `{ "user": { … } }` |
+
+未认证访问任一受保护接口返回 `401 unauthorized`。
+
+### 1.5 限流
+
+| 对象 | 限额 |
+| --- | --- |
+| 同一用户名的认证失败（`/challenge` 命中未知用户、`/login` 验签失败、`/mfa` 验证码错误、需验证码的 2FA 操作） | 10 次 / 60 秒 |
+| `/api/auth/challenge` 全局 | 60 次 / 60 秒 |
+| 已登录后的动态验证码校验 | 10 次 / 60 秒 |
+
+超限统一返回 `429 rate_limited` 并带 `Retry-After`（秒）。
+
+## 2. 账户自服务
+
+以下接口均需登录，且只作用于调用者本人。
+
+| 接口 | 请求体 | 响应 |
+| --- | --- | --- |
+| `POST /api/me/keypair` | `{ "totp": "123456" }`（可选） | `{ "private_key", "public_key" }` |
+| `POST /api/me/2fa/setup` | — | `{ "secret", "otpauth_url" }` |
+| `POST /api/me/2fa/enable` | `{ "code": "123456" }` | `{ "user": { … } }` |
+| `POST /api/me/2fa/disable` | `{ "code": "123456" }` | `{ "user": { … } }` |
+
+`POST /api/me/keypair` 立即作废旧公钥，并吊销除当前会话外的全部会话；新私钥只在该响应中出现
+一次。启用 2FA 的账号必须随请求提交 `totp`。
+
+`POST /api/me/2fa/setup` 生成并加密保存新的 TOTP 种子，返回 Base32 种子与 `otpauth://` 链接；
+此时 2FA 尚未启用，账号仍为未启用状态直到 `enable` 成功。
+
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 400 | `mfa_required` | 账号已启用 2FA，但请求缺少 `totp` |
+| 400 | `bad_totp` | 验证码不正确 |
+| 400 | `totp_missing` | 账号没有可用种子（尚未 setup 或已被重置） |
+| 400 | `totp_disabled` | 账号当前未启用 2FA |
+| 409 | `totp_enabled` | 账号已启用 2FA |
+
+## 3. 管理员
+
+以下接口要求 `role = admin`，否则返回 `403 forbidden`。
+
+| 接口 | 请求体 | 响应 |
+| --- | --- | --- |
+| `GET /api/admin/users` | — | `{ "users": [ … ] }`，含 `online` |
+| `POST /api/admin/users` | `{ "username", "role" }` | `{ "user", "private_key", "public_key" }` |
+| `POST /api/admin/users/{id}/keypair` | — | `{ "private_key", "public_key" }` |
+| `PATCH /api/admin/users/{id}` | `{ "role"?, "twofa_enabled"? }` | `{ "user": { … } }` |
+| `DELETE /api/admin/users/{id}` | — | `{ "ok": true }` |
+
+- 创建用户时服务端生成密钥对，私钥仅在该响应中出现一次。
+- `role` 变更受「至少保留一个管理员」约束。
+- `twofa_enabled` 只接受 `false`：管理员可强制关闭他人的 2FA（种子一并清除）；传 `true`
+  返回 `400 bad_request`，启用 2FA 只能由用户本人完成。
+- 重置他人密钥会吊销其全部会话。
+
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 400 | `bad_username` | 用户名不符合规则 |
+| 400 | `bad_role` | 角色不是 `admin` 或 `user` |
+| 400 | `self_delete` | 不能删除自己 |
+| 400 | `last_admin` | 操作会使系统失去唯一的管理员 |
+| 404 | `unknown_user` | 目标用户不存在 |
+| 409 | `user_exists` | 用户名已被占用 |
+
+### 3.1 上传上限
+
+| 接口 | 权限 | 响应 |
+| --- | --- | --- |
+| `GET /api/settings` | 登录 | `{ "max_upload_bytes": 10485760 }` |
+| `GET /api/admin/settings` | 管理员 | `{ "settings": { "max_upload_bytes": … } }` |
+| `PATCH /api/admin/settings` | 管理员 | 同上 |
+
+`max_upload_bytes` 默认 10485760（10 MiB），允许范围 1024 … 536870912（1 KiB … 512 MiB）。
+越界返回 `400 bad_limit`，请求体缺少该字段返回 `400 bad_request`。
 
 ## 4. 文件与目录
 
-- `GET /api/files` → `200 {"tree":[Node...]}`（不含工作区绝对路径，见 §10）
-  ```json
-  {"name":"notes","path":"notes","kind":"dir","mtime":1690000000000,
-   "children":[{"name":"a.md","path":"notes/a.md","kind":"file","size":123,"mtime":1690000000000}]}
-  ```
-  目录在前、按名称排序；忽略以 `.` 开头的隐藏项与 `node_modules`、`target`。
-- `GET /api/file?path=notes/a.md` → `200 {"path":"notes/a.md","content":"...","size":123,"lang":"markdown"}`
-  （非 UTF-8 / 二进制 → `415 {"error":{"code":"unsupported_media"}}`）
-- `POST /api/files` `{"path":"notes/b.md","kind":"file"|"dir","content":"# hi"}`
-  → `200 {"path":"notes/b.md"}`；已存在 `409 file_exists`。
-- `POST /api/files/rename` `{"from":"notes/b.md","to":"notes/c.md"}` → `200 {"path":"notes/c.md"}`
-  同时用于**移动**：`to` 可以指向另一个目录（`notes/b.md` → `assets/b.md`），目的目录会被自动创建。
-  目标已存在 `409 file_exists`；文件正在协作编辑 `409 file_busy`；把目录移入它自己/它的子目录、或原地不动 `400 bad_path`。
-- `POST /api/files/delete` `{"path":"notes/c.md"}` → `200 {"ok":true}`
+### 4.1 文件树
 
-## 5. 实时协作 WebSocket
-
-`GET /ws`（Upgrade，Cookie 认证，失败回 401）。**一条连接可同时加入多个文档**。
-所有帧为 JSON 文本帧，二进制载荷一律 base64 字符串。
-
-### 客户端 → 服务端
-
-| 帧 | 说明 |
-| --- | --- |
-| `{"t":"join","path":"notes/a.md"}` | 加入文档房间；服务端回 `init` |
-| `{"t":"leave","path":"notes/a.md"}` | 离开文档房间 |
-| `{"t":"update","path":"notes/a.md","update":"<b64 Yjs update>"}` | 本地增量更新（`Y.encodeStateAsUpdate` 全量亦可） |
-| `{"t":"awareness","path":"notes/a.md","update":"<b64>"}` | `encodeAwarenessUpdate` 字节，服务端原样转发给同房间其他人 |
-| `{"t":"presence","path":"notes/a.md","cursor":{"line":12,"ch":4},"selection":3}` | 上报自己当前所在文件与光标（行/列从 0 开始），`selection` 为选中字符数 |
-| `{"t":"ping"}` | 心跳，回 `{"t":"pong"}` |
-
-### 服务端 → 客户端
-
-| 帧 | 说明 |
-| --- | --- |
-| `{"t":"init","path":"notes/a.md","update":"<b64>"}` | 该文档的完整 CRDT 状态（客户端 `Y.applyUpdate(doc, bytes, 'remote')`） |
-| `{"t":"update","path":"notes/a.md","update":"<b64>","user":"<userId>"}` | 他人（或自己其他标签页）的更新；`user` 为来源用户名（服务端已按连接去重，正常不会回显给自己） |
-| `{"t":"awareness","path":"notes/a.md","update":"<b64>","user":"<userId>"}` | 他人 awareness 更新 |
-| `{"t":"peers","path":"notes/a.md","count":3}` | 房间在线人数变化 |
-| `{"t":"saved","path":"notes/a.md","ts":1690000000000}` | 已保存（前端显示"已保存"） |
-| `{"t":"presence","users":[PresenceUser...]}` | 全站在线状况快照，每 ~1s 或变化时推送 |
-| `{"t":"error","message":"..."}` | 错误提示（不断开连接） |
-
-`PresenceUser`：
-```json
-{"id":"uuid","username":"alice","color":"#4f9cf9","path":"notes/a.md",
- "cursor":{"line":12,"ch":4},"selection":3,"last_seen":1690000000000}
 ```
-在线但未打开任何文件时 `path` 为 `null`、`cursor` 为 `null`。
+GET /api/files
+```
 
-### Yjs 约定
+```json
+{
+  "tree": [
+    { "name": "notes", "path": "notes", "kind": "dir", "size": 0, "mtime": 0,
+      "children": [ … ] },
+    { "name": "README.md", "path": "README.md", "kind": "file",
+      "size": 812, "mtime": 1762000000000 }
+  ]
+}
+```
 
-- 每个文档固定一个根类型：`Y.Text`，名字 **`content`**。
-- 服务端持有权威副本并负责把文本实时写回磁盘文件。
-- 客户端本地事务 origin 为 `null` 时才是"自己的编辑"；应用远端更新时 origin 传
-  `'remote'`，从而 `Y.UndoManager`（只跟踪 `null` origin）天然实现"只能撤回自己的编辑"。
+- 同级条目按名称排序，目录在前。
+- `kind` 为 `dir` 或 `file`；`children` 只出现在目录节点上。
+- 跳过隐藏项、符号链接，以及 `node_modules`、`target` 目录。
+- 递归深度上限 12 层，条目上限 5000；超出部分静默截断，并在服务端记录一条警告。
 
-## 6. 静态资源
+### 4.2 读取文件
 
-- 后端从 `web/dist` 提供前端构建产物：`/` → `index.html`，其余按路径读取，
-  找不到时回退 `index.html`（SPA）。前端用 hash 路由：`#/login`、`#/app`、`#/admin`。
-- 前端构建：`cd web && npm install && npm run build`，产物输出到 `web/dist`。
+```
+GET /api/file?path=notes/a.md
+```
 
-## 7. 其他
+```json
+{ "path": "notes/a.md", "content": "…", "size": 812,
+  "lang": "markdown", "mtime": 1762000000000 }
+```
 
-- `GET /api/health` → `200 {"ok":true,"name":"md-coworker","version":"0.1.1","database":"ok"}`
-  （PostgreSQL 不可用时返回 `503` 且 `ok:false`、`database:"unavailable"`）
-- 时间戳统一为毫秒整数（`mtime`, `ts`）或 RFC3339 字符串（`created_at`）。
-- 所有 mutating 请求要求 `Content-Type: application/json`。
+`lang` 由扩展名推断（如 `markdown`、`rust`，未知为 `plaintext`）。
 
-## 8. 实现补充约定（v1.1，前后端联调后冻结）
-
-这些是契约中原本含糊、在联调时确认下来的细节：
-
-- **`init.update` 一定是"完整 Yjs state update"**（即
-  `encode_state_as_update_v1(StateVector::default())` 的结果，base64）。
-  空文档时也是一个合法的空 update（`\x00\x00` → `AAA=`），客户端直接 `Y.applyUpdate` 即可，
-  不需要 sync step1/step2 往返。
-- **`presence.selection` 是数字**：当前选区长度（0 表示没有选中内容）。若以后要传完整选区，
-  会新增字段 `selection_range:{anchor,head}`，`selection` 保持向后兼容。
-- **`saved` 帧在每次真正写盘后都发**（400ms 防抖保存、房间清空保存、进程退出前 flush 均会发），
-  前端据此把状态栏切到"已保存"。
-- **同一个连接对同一 `path` 重复 `join` 是幂等的**（不会重复计数，也不会报错，会重新下发 `init`），
-  客户端重连后可以直接重发 `join`。
-- **`update`/`awareness` 帧必须先 `join`**，否则返回 `{"t":"error"}`；`awareness` 帧服务端只做
-  二进制中继，不解析内容。
-- 服务端收到 `update` 后**不回显给发送者**（`from_conn` 过滤），避免本地重复应用。
-- 协作中的文件被 `POST /api/files/{rename,delete}` 命中时返回 `409 file_busy`；
-  房间没有成员后会立刻保存并从内存回收，快照若比磁盘文件旧会被视为过期并丢弃。
-
-## 9. 文件上传与原始资源（v1.2）
-
-### 9.1 上传大小阈值
-
-阈值由管理员设置，存在 PostgreSQL 的 `settings` 表（键 `max_upload_bytes`），未设置时默认
-`10485760`（10 MiB），合法范围 `1024 … 536870912`（1 KiB … 512 MiB）。
-
-- `GET /api/settings`（任何登录用户）
-  → `200 {"max_upload_bytes":10485760}`
-- `GET /api/admin/settings`（管理员）
-  → `200 {"settings":{"max_upload_bytes":10485760}}`
-- `PATCH /api/admin/settings`（管理员）`{"max_upload_bytes":20971520}`
-  → `200 {"settings":{"max_upload_bytes":20971520}}`；越界 → `400 {"error":{"code":"bad_limit"}}`
-
-### 9.2 `POST /api/files/upload?dir=<相对目录>&overwrite=0|1`
-
-`multipart/form-data`，一个或多个 `file` 字段；`dir` 缺省为工作区根，不存在会自动创建。
-单次请求最多 20 个文件。
-
-- 文件名只取客户端文件名的**最后一段**（`/`、`\` 之后的部分），并拒绝空名、`.`、`..`、
-  以 `.` 开头的隐藏名、含 `\0` 的名字，超长（> 200 字节）也拒绝 → `400 bad_filename`。
-- 同名文件已存在且 `overwrite` 不为真 → `409 file_exists`；`overwrite=1` 时原地覆盖
-  （先写临时文件再 `rename`，不会留下半个文件）。
-- 单文件超过阈值 → `413 {"error":{"code":"too_large"}}`，message 里带人类可读的上限；
-  超限时服务端已写入的临时文件会被删除，目录里不会出现残缺文件。
-- 成功 → `201`
-  ```json
-  {"dir":"assets","files":[
-    {"path":"assets/logo.png","size":10234,"kind":"image","url":"/api/raw?path=assets%2Flogo.png"}]}
-  ```
-  `kind` ∈ `image` | `text` | `other`（按扩展名与内容嗅探）。
-- 语料里没有"上传到协作中的 Markdown 文件"这种情形：上传只写磁盘，不会改动 CRDT 房间；
-  若目标路径正在被协作编辑，返回 `409 file_busy`。
-
-### 9.3 `GET /api/raw?path=<相对路径>`
-
-返回文件原始字节（图片、PDF、字体、二进制附件；也接受文本文件）。
-
-- `Content-Type` 由扩展名决定（`png`/`jpeg`/`gif`/`webp`/`avif`/`svg`/`pdf`/`txt`…），
-  未知扩展名按 `application/octet-stream` 并附 `Content-Disposition: attachment`。
-- 一律带 `X-Content-Type-Options: nosniff`；`svg` 额外带
-  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
-  防止内联脚本。
-- `Cache-Control: private, max-age=60`（图片会被预览反复引用）。
-- 目录、不存在、路径非法 → `404` / `400`，与 `/api/file` 一致。
-
-### 9.4 Markdown 里的图片
-
-预览渲染时把**相对路径的图片**改写为 `/api/raw?path=<按当前文档所在目录解析后编码>`，
-`http(s)://`、`data:`、已有 `/api/` 前缀的地址保持不变，这样 `![](assets/x.png)` 能直接显示。
-
-## 10. 安全加固契约（v1.3 / 服务端 0.1.1）
-
-本节是 0.1.1 起生效的**行为收紧**，前端必须按此实现；未列出的接口保持不变。
-
-### 10.1 新增与变更的错误码
-
-| code | 状态 | 含义 |
+| 状态 | code | 说明 |
 | --- | --- | --- |
-| `rate_limited` | 429 | 认证类接口触发限流，响应带 `Retry-After`（秒） |
-| `forbidden_origin` | 403 | `/ws` 的 `Origin` 与 `Host` 不一致（跨站 WebSocket 劫持防护） |
-| `too_large` | 413 | 读取或上传的内容超过上限 |
+| 400 | `bad_path` | 缺少 `path` 或路径非法 |
+| 400 | `not_a_file` | 目标是目录 |
+| 404 | `file_not_found` | 文件不存在 |
+| 413 | `too_large` | 超过 100 MiB |
+| 415 | `unsupported_media` | 内容不是 UTF-8 文本 |
 
-**隐藏路径**：任一路径组件以 `.` 开头（`.env`、`.git/config`、`data/bootstrap-admin.key` 等）
-一律 `400 bad_path`，不再"隐藏但可读"。
+### 4.3 新建、改名与删除
 
-### 10.2 认证
+| 接口 | 请求体 | 响应 |
+| --- | --- | --- |
+| `POST /api/files` | `{ "path", "kind": "file" \| "dir", "content"? }` | `{ "path": … }` |
+| `POST /api/files/rename` | `{ "from", "to" }` | `{ "path": <to> }` |
+| `POST /api/files/delete` | `{ "path" }` | `{ "ok": true }` |
 
-- `POST /api/auth/challenge`、`/api/auth/login`、`/api/auth/mfa` 受令牌桶限流：
-  同一用户名每 60 秒最多 10 次失败尝试，`/challenge` 全局每分钟 60 次；超限 `429 rate_limited`。
-- `mfa_tickets` 记录失败次数：**同一张 ticket 连续 5 次 TOTP 错误即作废**，必须重新用私钥登录；
-  响应仍是 `400 bad_totp`（不新增码，避免暴露计数）。
-- 会话令牌入库前先做 SHA-256，库中不再有明文令牌。
-- Cookie 在 HTTPS 场景（`X-Forwarded-Proto: https`）或启动时带 `--secure-cookies` 会加 `Secure`；
-  其余字段不变（`HttpOnly; SameSite=Lax`）。
+- `kind` 缺省为 `file`。
+- `rename` 同时用于移动文件或目录，并自动创建目标端的父目录。
+- `delete` 对目录执行递归删除。
+- 任一改动都会清理受影响的 CRDT 快照，被删除的内容不会在下次打开时由残留快照恢复。
 
-### 10.3 账号自服务
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 400 | `bad_path` | 路径非法，或把目录移动到自身/自身子目录 |
+| 400 | `bad_request` | `kind` 不是 `file`/`dir` |
+| 404 | `file_not_found` | 源路径不存在 |
+| 409 | `file_exists` | 目标已存在 |
+| 409 | `file_busy` | 目标或其子路径正在被协作编辑 |
 
-- `POST /api/me/keypair` 请求体 `{"totp": "123456"}`（可缺省为 `null`）：
-  启用 2FA 的账号必须提供有效 TOTP，缺失 → `400 mfa_required`，错误 → `400 bad_totp`。
-- 重置成功后**吊销该用户除当前会话外的全部会话**（当前会话继续有效，避免把自己踢下线）。
+## 5. 上传与原始资源
 
-### 10.4 文件与上传
+### 5.1 上传
 
-- `GET /api/files` 不再返回 `root` 字段（不再泄露服务端绝对路径）。
-- 路径解析做 `canonicalize` 前缀校验，符号链接不能逃出工作区；文件树跳过符号链接、
-  深度上限 12、条目上限 5000。
-- `GET /api/file`、`GET /api/raw` 对超过 **100 MiB** 的单个文件返回 `413 too_large`。
-- 上传被中断（客户端断开）不再残留 `.mc-upload-*` 临时文件。
-- 启动时若 `--data` 目录位于工作区内，直接拒绝启动并提示改用工作区外的 `--data`。
+```
+POST /api/files/upload?dir=assets&overwrite=0
+Content-Type: multipart/form-data
+```
 
-### 10.5 协作
+表单字段名固定为 `file`，一次请求最多 20 个文件。`dir` 是目标目录（缺省为工作区根目录，
+不存在时自动创建）；`overwrite` 取 `1`/`true`/`yes` 时覆盖同名文件。
 
-- `/ws` 在握手时校验 `Origin` 的 host（含端口）与 `Host` 一致，不一致回 `403 forbidden_origin`；
-  无 `Origin` 的非浏览器客户端（脚本/测试）照旧放行。
-- 房间成员计数改为原子增减，断开不再可能留下永久 `file_busy`；
-  重命名/删除期间对路径加写锁，期间的 `join` 得到 `409 file_busy`。
+文件名取客户端提交文件名的最后一段，需满足：非空、不以 `.` 开头、不含空字符与路径分隔符、
+不超过 200 字节。同名文件在未开启覆盖时返回 `409 file_exists`。
+
+响应 `201`：
+
+```json
+{
+  "dir": "assets",
+  "files": [
+    { "path": "assets/a.png", "size": 1024, "kind": "image",
+      "url": "/api/raw?path=assets%2Fa.png" }
+  ]
+}
+```
+
+`kind` 由扩展名判定：`image`（png/jpg/jpeg/gif/webp/avif/bmp/ico/svg）、`text`（常见文本与
+源码扩展名），其余为 `other`。
+
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 400 | `bad_filename` | 文件名为空、隐藏或含非法字符 |
+| 400 | `bad_multipart` | 请求体不是合法的 multipart |
+| 400 | `bad_path` | `dir` 指向已存在的文件 |
+| 400 | `no_files` | 请求里没有任何文件 |
+| 400 | `too_many_files` | 超过 20 个文件 |
+| 400 | `not_a_file` | 目标路径是同名目录 |
+| 409 | `file_exists` | 同名文件已存在且未开启覆盖 |
+| 409 | `file_busy` | 目标文件正在被协作编辑 |
+| 413 | `too_large` | 单个文件超过 `max_upload_bytes` |
+
+超限或中断的上传不会留下临时文件。上传不经过 CRDT，直接落盘。
+
+### 5.2 原始字节
+
+```
+GET /api/raw?path=assets/a.png
+```
+
+响应为文件字节，头部固定包含：
+
+| 头 | 值 |
+| --- | --- |
+| `Content-Type` | 先按扩展名推断，再按内容嗅探，均无法识别时为 `application/octet-stream` |
+| `Content-Disposition` | 图片、PDF 与文本为 `inline`，其余为 `attachment` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Cache-Control` | `private, max-age=60` |
+| `x-file-mtime` | 文件修改时间（Unix 毫秒），供前端判断缓存是否过期 |
+
+`image/svg+xml` 额外带
+`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`。
+
+| 状态 | code | 说明 |
+| --- | --- | --- |
+| 400 | `bad_path` | 缺少 `path` 或路径非法 |
+| 400 | `not_a_file` | 目标是目录 |
+| 404 | `file_not_found` | 文件不存在 |
+| 413 | `too_large` | 超过 100 MiB |
+
+## 6. 实时协作
+
+### 6.1 握手
+
+```
+GET /ws   (Upgrade: websocket)
+```
+
+认证沿用会话 Cookie。握手同时校验 `Origin`：缺失时放行；存在时必须与 `Host` 的主机名与端口
+一致，scheme 只能是 `http`/`https`/`ws`/`wss`，否则返回 `403 forbidden_origin`。
+
+连接建立后每 30 秒复验一次会话，失效时服务端发送 `error` 帧并关闭连接。
+
+一条连接可以加入多个文档房间。所有帧都是 JSON 文本帧，二进制帧不支持（收到即回 `error`
+帧）。Yjs 数据以标准 Base64 携带。
+
+### 6.2 客户端帧
+
+| `t` | 字段 | 说明 |
+| --- | --- | --- |
+| `join` | `path` | 加入文档房间，幂等；成功后收到 `init` |
+| `leave` | `path` | 离开房间 |
+| `update` | `path`, `update` | Yjs 增量更新（Base64），必须先 `join` |
+| `awareness` | `path`, `update` | 光标共享状态（Base64），必须先 `join`；服务端只中继不解析 |
+| `presence` | `path?`, `cursor?`, `selection?` | 上报所在文档与光标；`path` 缺省表示保持原值，`""` 表示已不编辑任何文档 |
+| `ping` | — | 保活，回 `pong` |
+
+`cursor` 为 `{ "line": 0, "ch": 0 }`（均从 0 开始）；`selection` 为当前选中的字符数，无选中
+时为 0。
+
+### 6.3 服务端帧
+
+| `t` | 字段 | 说明 |
+| --- | --- | --- |
+| `init` | `path`, `update`, `peers` | 加入成功；`update` 是文档的完整状态更新，用 `Y.applyUpdate` 应用即可，无需同步步骤。连接级重同步时额外带 `"resync": true` |
+| `update` | `path`, `update`, `user` | 其他成员的更新，`user` 为用户名；不回显给发送者 |
+| `awareness` | `path`, `update` | 其他成员的光标状态；不回显给发送者 |
+| `peers` | `path`, `count` | 房间成员数变化 |
+| `saved` | `path`, `ts` | 已写入磁盘，`ts` 为毫秒时间戳 |
+| `presence` | `users` | 全局在线状态，约每秒或在变化时推送；空列表表示无人在线 |
+| `error` | `message` | 操作失败，`message` 可直接展示 |
+| `pong` | — | 对 `ping` 的回应 |
+
+`users` 的元素为：
+
+```json
+{
+  "id": "3f2a…", "username": "alice", "color": "#4f9cf9",
+  "path": "notes/a.md", "cursor": { "line": 12, "ch": 4 },
+  "selection": 7, "last_seen": 1762000000000
+}
+```
+
+同一用户的多标签页只出现一次（取最近心跳）；未打开任何文档时 `path` 与 `cursor` 为 `null`；
+30 秒无心跳的用户从列表中移除。
+
+未加入房间时发送 `update` 会收到 `error` 帧且不会被应用，发送 `awareness` 则被静默忽略。加入
+房间失败（目标被删除、不是文件、正在被重命名或删除）同样通过 `error` 帧返回。未知的 `t` 静默
+忽略。
+
+### 6.4 Yjs 约定
+
+- 文档根类型为 `Y.Text`，名为 `content`，即前端取 `doc.getText("content")`。
+- 本地编辑的 origin 为 `null`，远端应用的更新使用 `"remote"`；撤销管理器只跟踪 `null`。
+- 服务端为每个房间维护一份 `Y.Doc`，成员数归零后房间被回收。
+
+### 6.5 落盘
+
+房间内容在首次改动后以 400 毫秒防抖写入磁盘：先写临时文件再原子重命名，成功后广播 `saved`。
+房间清空与进程退出时立即落盘；写盘失败会保留脏标记并在下一个周期重试。
+
+同时在 `data/crdt/` 维护加密快照，用于服务重启后恢复尚未落盘的内容；快照比磁盘文件旧时视为
+过期并丢弃。
+
+## 7. 静态资源与前端路由
+
+后端从 `web/dist` 提供前端产物，未命中的路径回退到 `index.html`（SPA 回退）。前端使用 hash
+路由：`#/login`、`#/app`、`#/admin`。
+
+所有响应都带基线安全头：`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、
+`Referrer-Policy: no-referrer`、`Cross-Origin-Opener-Policy: same-origin`，以及一份内容安全策略
+（`style-src` 允许 `'unsafe-inline'`，`worker-src` 允许 `blob:`，`connect-src` 允许 `ws:`/`wss:`，
+以满足 KaTeX、Mermaid 与 Monaco 的需要）。
+
+## 8. 健康检查
+
+```
+GET /api/health
+```
+
+```json
+{ "ok": true, "name": "md-coworker", "version": "0.1.1", "database": "ok" }
+```
+
+数据库不可达时返回 `503`，其中 `ok` 为 `false`、`database` 为 `"unavailable"`。
+
+## 9. 错误码
+
+| code | 典型状态 | 含义 |
+| --- | --- | --- |
+| `bad_request` | 400 | 请求体字段缺失或取值不允许 |
+| `bad_path` | 400 | 路径非法、缺失或指向不允许的位置 |
+| `bad_filename` | 400 | 上传文件名非法 |
+| `bad_multipart` | 400 | 上传请求体不是合法 multipart |
+| `bad_username` | 400 | 用户名不符合规则 |
+| `bad_role` | 400 | 角色取值非法 |
+| `bad_limit` | 400 | 上传上限超出允许范围 |
+| `bad_signature` | 401 | 签名与登记的公钥不匹配 |
+| `bad_totp` | 400 | 动态验证码不正确 |
+| `challenge_expired` | 401 | 登录挑战已过期或已被使用 |
+| `file_busy` | 409 | 目标正在被协作编辑或加锁 |
+| `file_exists` | 409 | 目标已存在 |
+| `file_not_found` | 404 | 文件不存在 |
+| `forbidden` | 403 | 权限不足 |
+| `forbidden_origin` | 403 | WebSocket 握手的 Origin 校验失败 |
+| `internal_error` | 500 | 服务端内部错误，详情只进日志 |
+| `last_admin` | 400 | 操作会使系统失去唯一管理员 |
+| `mfa_expired` | 401 | 二次验证票据已过期或作废 |
+| `mfa_required` | 400 | 该操作需要当前动态验证码 |
+| `no_files` | 400 | 上传请求不含文件 |
+| `not_a_file` | 400 | 目标不是文件 |
+| `rate_limited` | 429 | 触发限流，响应带 `Retry-After` |
+| `self_delete` | 400 | 不能删除自己 |
+| `too_large` | 413 | 超过读取或上传上限 |
+| `too_many_files` | 400 | 单次上传文件数超限 |
+| `totp_disabled` | 400 | 账号未启用 2FA |
+| `totp_enabled` | 409 | 账号已启用 2FA |
+| `totp_missing` | 400 | 账号没有可用 TOTP 种子 |
+| `unauthorized` | 401 | 未登录或会话已失效 |
+| `unknown_user` | 404 | 用户不存在 |
+| `unsupported_media` | 415 | 内容不是 UTF-8 文本 |
+| `user_exists` | 409 | 用户名已被占用 |
+
+## 10. 常量
+
+| 名称 | 值 |
+| --- | --- |
+| 默认会话有效期 | 604800 秒 |
+| `COOKIE_NAME` | `mc_sid` |
+| `CHALLENGE_TTL_SECS` | 120 |
+| `MFA_TICKET_TTL_SECS` | 300 |
+| `MFA_MAX_ATTEMPTS` | 5 |
+| `AUTH_MAX_FAILURES` | 10 次 / 60 秒（按用户名） |
+| `CHALLENGE_MAX_REQUESTS` | 60 次 / 60 秒（进程级） |
+| `MAX_READ_BYTES` | 104857600（100 MiB） |
+| `MAX_TREE_DEPTH` | 12 |
+| `MAX_TREE_ENTRIES` | 5000 |
+| `MAX_FILES_PER_REQUEST` | 20 |
+| `MAX_FILENAME_BYTES` | 200 |
+| `max_upload_bytes` 默认值 / 范围 | 10485760 / 1024 … 536870912 |
+| `FLUSH_INTERVAL` | 400 毫秒 |
+| `PRESENCE_INTERVAL` | 1 秒 |
+| `PRESENCE_TTL_MS` | 30000 |
+| WebSocket 会话复验间隔 | 30 秒 |
+| 路径写锁超时 | 5 秒 |

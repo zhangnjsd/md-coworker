@@ -1,18 +1,20 @@
 //! HTTP route wiring, including static frontend delivery.
 
 use crate::{admin, auth, collab, files, models::AppState, settings, upload};
+use axum::extract::Request;
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
 use serde_json::json;
+use std::sync::LazyLock;
 use tower_http::{
     services::{ServeDir, ServeFile},
-    set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 
@@ -67,33 +69,15 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(serve)
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
-        .layer(security_headers())
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
 
-/// Baseline security headers, including a content security policy. The policy is not
-/// the strictest one possible (`'unsafe-inline'` styles and `blob:` workers are needed
-/// by KaTeX, Mermaid and Monaco), but it locks down the parts that matter:
-/// no third-party scripts, no `eval`, no framing of the app and no base-uri rewriting.
-type SecurityHeaders = tower::layer::util::Stack<
-    SetResponseHeaderLayer<HeaderValue>,
-    tower::layer::util::Stack<
-        SetResponseHeaderLayer<HeaderValue>,
-        tower::layer::util::Stack<
-            SetResponseHeaderLayer<HeaderValue>,
-            tower::layer::util::Stack<
-                SetResponseHeaderLayer<HeaderValue>,
-                tower::layer::util::Stack<
-                    SetResponseHeaderLayer<HeaderValue>,
-                    tower::layer::util::Identity,
-                >,
-            >,
-        >,
-    >,
->;
-
-/// Content security policy for the single page app. `connect-src` has to name the
-/// WebSocket schemes because the collaboration channel shares the page origin.
+/// Content security policy for the single page app. It is not the strictest possible
+/// (`'unsafe-inline'` styles and `blob:` workers are required by KaTeX, Mermaid and
+/// Monaco), but it forbids third-party scripts, `eval`, framing by other origins and
+/// base-uri rewriting. `connect-src` names the WebSocket schemes because the
+/// collaboration channel shares the page origin.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
 script-src 'self'; \
 style-src 'self' 'unsafe-inline'; \
@@ -106,29 +90,34 @@ base-uri 'none'; \
 form-action 'self'; \
 object-src 'none'";
 
-fn security_headers() -> SecurityHeaders {
-    tower::ServiceBuilder::new()
-        .layer(SetResponseHeaderLayer::overriding(
+static SECURITY_HEADERS: LazyLock<Vec<(HeaderName, HeaderValue)>> = LazyLock::new(|| {
+    vec![
+        (
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_FRAME_OPTIONS,
-            HeaderValue::from_static("SAMEORIGIN"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::REFERRER_POLICY,
-            HeaderValue::from_static("no-referrer"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
+        ),
+        (header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN")),
+        (header::REFERRER_POLICY, HeaderValue::from_static("no-referrer")),
+        (
             HeaderName::from_static("cross-origin-opener-policy"),
             HeaderValue::from_static("same-origin"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
+        ),
+        (
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(CONTENT_SECURITY_POLICY),
-        ))
-        .into_inner()
+        ),
+    ]
+});
+
+/// Overwrite the baseline security headers on every reply: API JSON, the SPA shell
+/// and raw file bytes all need the same policy.
+async fn security_headers(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    for (name, value) in SECURITY_HEADERS.iter() {
+        headers.insert(name.clone(), value.clone());
+    }
+    res
 }
 
 /// Liveness probe. It also reports whether PostgreSQL answers, so a broken

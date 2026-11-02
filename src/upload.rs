@@ -309,6 +309,10 @@ pub async fn upload(
             }
             _ => {}
         }
+        // Hold the path's write lock across the "nobody is editing?" check and the write,
+        // exactly like rename and delete do: without it a connection could join the room
+        // in between and keep editing a document whose file we then overwrite.
+        let _lock = state.hub.lock_path(&rel);
         if state.hub.is_active(&rel) {
             return Err(AppError::conflict(
                 "file_busy",

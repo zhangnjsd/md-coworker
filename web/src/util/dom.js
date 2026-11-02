@@ -208,38 +208,3 @@ export async function copyText(text) {
   }
 }
 
-export function debounce(fn, ms) {
-  let timer = null;
-  const wrapped = (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-  wrapped.cancel = () => clearTimeout(timer);
-  return wrapped;
-}
-
-export function throttle(fn, ms) {
-  let last = 0;
-  let timer = null;
-  let lastArgs = null;
-  const wrapped = (...args) => {
-    lastArgs = args;
-    const now = Date.now();
-    const wait = ms - (now - last);
-    if (wait <= 0) {
-      last = now;
-      fn(...lastArgs);
-    } else if (!timer) {
-      timer = setTimeout(() => {
-        timer = null;
-        last = Date.now();
-        fn(...lastArgs);
-      }, wait);
-    }
-  };
-  wrapped.cancel = () => {
-    clearTimeout(timer);
-    timer = null;
-  };
-  return wrapped;
-}

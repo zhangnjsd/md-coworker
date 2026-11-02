@@ -2,10 +2,10 @@
 // source pane in code.js. Both must look and behave the same, so the theme, the
 // worker wiring, the font stack and the remote-caret painter live here once.
 //
-// code.js keeps its own copy of this scaffolding on purpose — it has to stay
-// working on its own — and every piece below is idempotent, so loading both is
-// harmless: `defineTheme` replaces a same-named theme, the worker hook is set
-// only when missing, and each painter owns its own <style> element.
+// Both panes import this module, so `defineTheme`, the worker hook and the
+// stylesheet are set up exactly once, and a change here cannot drift from one
+// pane to the other.
+import "../styles/monaco.css";
 import * as monaco from "monaco-editor/esm/vs/editor/edcore.main.js";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js";

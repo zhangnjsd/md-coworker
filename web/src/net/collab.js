@@ -11,6 +11,7 @@ import {
 } from "y-protocols/awareness";
 import { bytesToB64, b64ToBytes } from "../util/b64.js";
 import { awarenessUser } from "../util/color.js";
+import { reportUnauthorized } from "./api.js";
 
 const INIT_TIMEOUT_MS = 8000;
 const PRESENCE_THROTTLE_MS = 400;
@@ -118,8 +119,37 @@ export class CollabClient {
       }
       if (this.destroyed) return;
       this.#setStatus("closed");
-      this.#scheduleReconnect();
+      // The browser hides the handshake status, so an expired cookie (401) or a rejected
+      // Origin (403) looks exactly like a dropped connection: ask the API instead of
+      // reconnecting forever.
+      this.#verifySession().then((retryable) => {
+        if (retryable) this.#scheduleReconnect();
+      });
     };
+  }
+
+  /** @returns {Promise<boolean>} whether reconnecting makes sense. */
+  async #verifySession() {
+    try {
+      const res = await fetch("/api/me", { credentials: "same-origin" });
+      if (res.ok) return true;
+      if (res.status === 403) {
+        const body = await res.json().catch(() => null);
+        this.onError(
+          body?.error?.code === "forbidden_origin"
+            ? "实时连接的来源校验失败，已停止重连"
+            : "没有访问权限，已停止重连",
+        );
+      } else {
+        this.onError("会话已失效，请重新登录");
+      }
+      this.destroyed = true;
+      reportUnauthorized();
+      return false;
+    } catch {
+      // Network failure: the server may simply be restarting, keep retrying.
+      return true;
+    }
   }
 
   #scheduleReconnect() {
@@ -387,6 +417,9 @@ export class CollabClient {
 
   setCurrentPath(path) {
     this.currentPath = path || null;
+    // The buffered caret belongs to the previous file; keeping it would re-broadcast a
+    // stale position for the file we just left.
+    this.pendingPresence = null;
     this.#sendPresence(true);
   }
 
@@ -413,16 +446,17 @@ export class CollabClient {
       clearTimeout(this.presenceTimer);
       this.presenceTimer = null;
     }
-    const payload = this.pendingPresence || {
-      path: this.currentPath,
-      cursor: null,
-      selection: 0,
-    };
+    // `currentPath` is authoritative; the buffer only supplies a caret reported for that
+    // same path.
+    const path = this.currentPath;
+    const pending = this.pendingPresence;
+    this.pendingPresence = null;
+    const fresh = Boolean(path) && Boolean(pending) && pending.path === path;
     this.#sendRaw({
       t: "presence",
-      path: payload.path || null,
-      cursor: payload.path ? payload.cursor : null,
-      selection: payload.path ? payload.selection : 0,
+      path: path || null,
+      cursor: fresh ? pending.cursor : null,
+      selection: fresh ? pending.selection : 0,
     });
   }
 

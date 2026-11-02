@@ -213,7 +213,8 @@ export function mountLogin(host, opts) {
       );
 
       if (result && result.status === "mfa_required") {
-        storeKey(username, bytesToB64(seed));
+        // The key is written to localStorage only once the second factor is accepted:
+        // an abandoned MFA step must not leave a private key on disk.
         showMfaStep(username, result.ticket, bytesToB64(seed));
         return;
       }

@@ -28,10 +28,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -113,7 +113,6 @@ pub struct Room {
     pub text: TextRef,
     pub members: AtomicUsize,
     pub dirty: AtomicBool,
-    pub last_saved_ms: AtomicI64,
 }
 
 impl Room {
@@ -284,7 +283,6 @@ impl Hub {
             text,
             members: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
-            last_saved_ms: AtomicI64::new(crate::db::now_ms()),
         });
 
         if self.is_locked(path) {
@@ -352,13 +350,30 @@ impl Hub {
             .contains(&key)
     }
 
-    pub fn join(&self, room: &Arc<Room>) -> usize {
-        let count = room.members.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self.tx.send(ServerMsg::Peers {
-            path: room.path.clone(),
-            count,
-        });
-        count
+    /// Join `path`, creating the room when necessary, and return it with the new member
+    /// count.
+    ///
+    /// Membership is incremented while the room map is locked, so a concurrent
+    /// `recycle_room` (triggered by the last member of the previous generation leaving)
+    /// cannot drop the room between "look it up" and "count me in" — which used to leave
+    /// the connection holding a document that `room()` no longer returns.
+    pub fn join_path(&self, path: &str) -> Result<Arc<Room>, AppError> {
+        loop {
+            let room = self.ensure_room(path)?;
+            let rooms = self.rooms.lock().expect("rooms 锁被毒化");
+            let Some(current) = rooms.get(path).filter(|entry| Arc::ptr_eq(entry, &room)) else {
+                // Recycled between `ensure_room` and here: build a fresh generation.
+                drop(rooms);
+                continue;
+            };
+            let count = current.members.fetch_add(1, Ordering::Relaxed) + 1;
+            drop(rooms);
+            let _ = self.tx.send(ServerMsg::Peers {
+                path: room.path.clone(),
+                count,
+            });
+            return Ok(room);
+        }
     }
 
     pub fn leave(&self, room: &Arc<Room>) -> usize {
@@ -413,23 +428,40 @@ impl Hub {
     }
 
     /// Flush the room text to disk right now and store an encrypted snapshot.
+    ///
+    /// The dirty flag is cleared up front so concurrent edits during the write are not
+    /// forgotten; when any step fails it is set again, because a failed flush must be
+    /// retried by the next tick instead of silently dropping the user's edits.
     pub fn flush_room(&self, room: &Arc<Room>) -> Result<()> {
         if !room.dirty.swap(false, Ordering::Relaxed) {
             return Ok(());
         }
+        match self.write_room(room) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                room.dirty.store(true, Ordering::Relaxed);
+                Err(err)
+            }
+        }
+    }
+
+    fn write_room(&self, room: &Arc<Room>) -> Result<()> {
         let content = room.content();
 
         if let Some(parent) = room.file.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建父目录失败: {}", parent.display()))?;
         }
-        // Write a temp file and rename it, so other tools never observe a half-written file.
+        // Write a temp file and rename it, so other tools never observe a half-written
+        // file. The name carries a random suffix: the background ticker, the
+        // last-member leave and the shutdown flush can reach the same room at once.
         let tmp = room.file.with_file_name(format!(
-            ".{}.mc-tmp",
+            ".{}.mc-tmp-{}",
             room.file
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "doc".into())
+                .unwrap_or_else(|| "doc".into()),
+            uuid::Uuid::new_v4()
         ));
         std::fs::write(&tmp, content.as_bytes())
             .with_context(|| format!("写入临时文件失败: {}", tmp.display()))?;
@@ -449,7 +481,6 @@ impl Hub {
             .with_context(|| format!("写入 CRDT 快照失败: {}", snapshot.display()))?;
 
         let ts = crate::db::now_ms();
-        room.last_saved_ms.store(ts, Ordering::Relaxed);
         let _ = self.tx.send(ServerMsg::Saved {
             path: room.path.clone(),
             ts,
@@ -490,12 +521,58 @@ impl Hub {
     }
 
     /// Drop the snapshot of a file that was renamed or deleted.
+    ///
+    /// A room that still has members is left alone: dropping it would strand those
+    /// connections on a `Doc` that is no longer reachable by path.
     pub fn forget_snapshot(&self, path: &str) {
         let snapshot = self.snapshot_path(path);
-        if snapshot.exists() {
-            let _ = std::fs::remove_file(snapshot);
+        if snapshot.exists()
+            && let Err(err) = std::fs::remove_file(&snapshot)
+        {
+            tracing::warn!(path = %snapshot.display(), error = %err, "删除 CRDT 快照失败");
         }
-        self.rooms.lock().expect("rooms 锁被毒化").remove(path);
+        let mut rooms = self.rooms.lock().expect("rooms 锁被毒化");
+        let live = rooms
+            .get(path)
+            .map(|room| room.members.load(Ordering::Relaxed) > 0)
+            .unwrap_or(false);
+        if live {
+            tracing::debug!(path, "房间仍有成员，保留内存文档");
+            return;
+        }
+        rooms.remove(path);
+    }
+
+    /// Drop the snapshot of `prefix` and of every path below it that this process still
+    /// knows about (renaming or deleting a directory takes its children with it).
+    ///
+    /// Snapshot files are named after `sha256(path)`, so a child path that was never open
+    /// in this process cannot be enumerated from disk; such an orphan is harmless, because
+    /// a snapshot is only loaded when its path exists again *and* is not older than the
+    /// file on disk.
+    pub fn forget_snapshot_tree(&self, prefix: &str) {
+        self.forget_snapshot(prefix);
+        let needle = format!("{prefix}/");
+        let stale: Vec<String> = self
+            .rooms
+            .lock()
+            .expect("rooms 锁被毒化")
+            .keys()
+            .filter(|key| key.starts_with(&needle))
+            .cloned()
+            .collect();
+        for path in stale {
+            self.forget_snapshot(&path);
+        }
+    }
+
+    /// Is any collaborator editing `path` or a file below it?
+    pub fn active_under(&self, path: &str) -> bool {
+        let needle = format!("{path}/");
+        self.rooms.lock().expect("rooms 锁被毒化").iter().any(|(key, room)| {
+            (key == path || key.starts_with(&needle))
+                && room.members.load(Ordering::Relaxed) > 0
+        })
     }
 
     // ------------------------------------------------------------ presence
@@ -516,20 +593,32 @@ impl Hub {
         );
     }
 
-    pub fn presence_update(
-        &self,
-        conn: u64,
-        path: Option<String>,
-        cursor: Option<Cursor>,
-        selection: usize,
-    ) {
+    /// Set (or clear, with `None`) the file a connection is editing.
+    pub fn presence_set_path(&self, conn: u64, path: Option<String>) {
         let mut agents = self.agents.lock().expect("agents 锁被毒化");
         if let Some(agent) = agents.get_mut(&conn) {
-            if path.is_some() {
-                agent.path = path;
-            }
+            agent.path = path;
+            agent.last_seen = crate::db::now_ms();
+        }
+    }
+
+    /// Update the caret/selection of a connection without touching its file.
+    pub fn presence_update(&self, conn: u64, cursor: Option<Cursor>, selection: usize) {
+        let mut agents = self.agents.lock().expect("agents 锁被毒化");
+        if let Some(agent) = agents.get_mut(&conn) {
             agent.cursor = cursor;
             agent.selection = selection;
+            agent.last_seen = crate::db::now_ms();
+        }
+    }
+
+    /// The connection stopped editing: drop its file, caret and selection.
+    pub fn presence_leave_path(&self, conn: u64) {
+        let mut agents = self.agents.lock().expect("agents 锁被毒化");
+        if let Some(agent) = agents.get_mut(&conn) {
+            agent.path = None;
+            agent.cursor = None;
+            agent.selection = 0;
             agent.last_seen = crate::db::now_ms();
         }
     }
@@ -629,7 +718,7 @@ pub async fn ws_handler(
     // Reject a cross-site handshake *before* upgrading: once the socket is open the
     // browser has already sent the cookies it holds for this origin.
     check_origin(&headers)?;
-    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, auth.user)))
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, auth)))
 }
 
 /// Split an `host[:port]` authority into a lowercase host and a port, falling back to
@@ -729,7 +818,9 @@ struct ClientMsg {
     selection: Option<usize>,
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, user: UserRow) {
+async fn handle_socket(socket: WebSocket, state: AppState, auth: AuthUser) {
+    let session_token = auth.token;
+    let user = auth.user;
     let hub = state.hub.clone();
     let conn = hub.next_conn();
     hub.presence_register(conn, &user);
@@ -748,6 +839,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, user: UserRow) {
 
     let mut events = hub.subscribe();
     let mut joined: HashSet<String> = HashSet::new();
+    // A socket authenticates once at the handshake; logout or a keypair rotation
+    // elsewhere must still end it, so the session is re-checked periodically.
+    let mut session_check = tokio::time::interval(Duration::from_secs(30));
+    session_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let send = |payload: Value| {
         let text = payload.to_string();
@@ -779,9 +874,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user: UserRow) {
                                 continue;
                             }
                         };
-                        if let Err(err) = handle_client_msg(
-                            &state, &hub, conn, &user, parsed, &mut joined, &out_tx,
-                        ).await {
+                        if let Err(err) =
+                            handle_client_msg(&hub, conn, &user, parsed, &mut joined, &out_tx).await
+                        {
                             send(json!({"t":"error","message":err})).await;
                         }
                     }
@@ -796,9 +891,44 @@ async fn handle_socket(socket: WebSocket, state: AppState, user: UserRow) {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "WebSocket 广播积压，丢弃部分事件");
+                        // Yjs updates cannot be replayed once skipped, so re-seed every
+                        // joined room with its full state instead of leaving this client
+                        // silently divergent.
+                        tracing::warn!(skipped, "WebSocket 广播积压，向该连接重发全量状态");
+                        for path in &joined {
+                            if let Some(room) = hub.room(path) {
+                                let update = room
+                                    .doc
+                                    .transact()
+                                    .encode_state_as_update_v1(&StateVector::default());
+                                let payload = json!({
+                                    "t": "init",
+                                    "path": path,
+                                    "update": B64.encode(update),
+                                    "peers": room.members.load(Ordering::Relaxed),
+                                    "resync": true,
+                                });
+                                if out_tx
+                                    .send(Message::Text(payload.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = session_check.tick() => {
+                match state.db.session_user(&session_token).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        send(json!({"t":"error","message":"会话已失效，请重新登录"})).await;
+                        break;
+                    }
+                    Err(err) => tracing::warn!(error = %err, "校验 WebSocket 会话失败"),
                 }
             }
         }
@@ -816,7 +946,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, user: UserRow) {
 }
 
 async fn handle_client_msg(
-    state: &AppState,
     hub: &Arc<Hub>,
     conn: u64,
     user: &UserRow,
@@ -836,14 +965,21 @@ async fn handle_client_msg(
             let raw_path = msg.path.unwrap_or_default();
             let path = files::normalize_rel(&raw_path);
             if hub.is_locked(&path) {
-                return Err("file_busy: 该文件正在被重命名或删除，请稍后重试".into());
+                return Err("该文件正在被重命名或删除，请稍后重试".into());
             }
-            let room = hub
-                .ensure_room(&path)
-                .map_err(|err| format!("无法打开 {}: {}", path, err))?;
-            if joined.insert(path.clone()) {
-                hub.join(&room);
-            }
+            // Re-joining a document this connection already holds stays idempotent: the
+            // membership count must not grow a second time, or it can never return to
+            // zero and the file would stay `file_busy` forever.
+            let room = if joined.contains(&path) {
+                hub.room(&path)
+                    .ok_or_else(|| format!("文档房间不存在: {path}"))?
+            } else {
+                let room = hub
+                    .join_path(&path)
+                    .map_err(|err| format!("无法打开 {path}: {}", err.message()))?;
+                joined.insert(path.clone());
+                room
+            };
             // Send the full document state.
             let state_update = room
                 .doc
@@ -865,6 +1001,8 @@ async fn handle_client_msg(
             {
                 hub.leave(&room);
             }
+            hub.presence_leave_path(conn);
+            hub.broadcast_presence_if_changed();
         }
         "update" => {
             let path = files::normalize_rel(msg.path.as_deref().unwrap_or(""));
@@ -907,11 +1045,13 @@ async fn handle_client_msg(
             });
         }
         "presence" => {
-            let path = msg
-                .path
-                .map(|value| files::normalize_rel(&value))
-                .filter(|value| !value.is_empty());
-            hub.presence_update(conn, path, msg.cursor, msg.selection.unwrap_or(0));
+            // An absent `path` leaves the current file alone (caret-only updates); an
+            // explicitly empty one means "I am no longer editing anything".
+            if let Some(raw) = msg.path.as_deref() {
+                let path = files::normalize_rel(raw);
+                hub.presence_set_path(conn, (!path.is_empty()).then_some(path));
+            }
+            hub.presence_update(conn, msg.cursor, msg.selection.unwrap_or(0));
             hub.broadcast_presence_if_changed();
         }
         "ping" => {
@@ -921,7 +1061,6 @@ async fn handle_client_msg(
             tracing::debug!(kind = other, "忽略未知客户端消息");
         }
     }
-    let _ = state;
     Ok(())
 }
 
@@ -978,15 +1117,6 @@ fn encode_event(msg: &ServerMsg, self_conn: u64, joined: &HashSet<String>) -> Op
         }
     }
 }
-
-/// * Test use.
-#[allow(dead_code)]
-pub fn room_text(room: &Room) -> String {
-    room.content()
-}
-
-#[allow(dead_code)]
-fn _assert_path(_: &Path) {}
 
 #[cfg(test)]
 mod tests {

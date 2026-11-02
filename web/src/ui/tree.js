@@ -2,6 +2,7 @@
 // Ink & Signal shell pass: mono-weight 1.5px outline icons, 28px rows,
 // skeleton loading state, inline retry on failure, keyboard reachable rows.
 import { el, clear } from "../util/dom.js";
+import { IMAGE_EXTS, baseName, containsPath, extOf, joinPath, parentPath } from "../util/path.js";
 
 const EXPANDED_KEY = "mc.tree.expanded";
 
@@ -34,56 +35,6 @@ function icon(name, size = 13) {
     }</svg>`,
   });
 }
-
-function extOf(name) {
-  const idx = String(name).lastIndexOf(".");
-  return idx > 0 ? name.slice(idx + 1).toLowerCase() : "";
-}
-
-function containsPath(nodes, path) {
-  for (const node of nodes || []) {
-    if (node.path === path) return true;
-    if (node.children && containsPath(node.children, path)) return true;
-  }
-  return false;
-}
-
-function findNode(nodes, path) {
-  for (const node of nodes || []) {
-    if (node.path === path) return node;
-    if (node.children) {
-      const hit = findNode(node.children, path);
-      if (hit) return hit;
-    }
-  }
-  return null;
-}
-
-function parentPath(path) {
-  const idx = String(path || "").lastIndexOf("/");
-  return idx === -1 ? "" : path.slice(0, idx);
-}
-
-function baseName(path) {
-  const parts = String(path || "").split("/");
-  return parts[parts.length - 1] || "";
-}
-
-function joinPath(dir, name) {
-  return dir ? `${dir}/${name}` : name;
-}
-
-const IMAGE_EXTS = [
-  "png",
-  "jpg",
-  "jpeg",
-  "gif",
-  "webp",
-  "avif",
-  "bmp",
-  "ico",
-  "svg",
-];
 
 function rowIconName(node, open) {
   if (node.kind === "dir") return open ? "folder-open" : "folder";
@@ -218,19 +169,9 @@ export class FileTree {
     if (persist) this.#saveExpanded();
   }
 
-  isExpanded(path) {
-    return this.expanded.has(path);
-  }
-
   toggleDir(path) {
     if (this.expanded.has(path)) this.expanded.delete(path);
     else this.expanded.add(path);
-    this.#saveExpanded();
-    this.render();
-  }
-
-  collapseAll() {
-    this.expanded.clear();
     this.#saveExpanded();
     this.render();
   }

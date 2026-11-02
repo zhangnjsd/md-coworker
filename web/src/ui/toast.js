@@ -70,9 +70,3 @@ export const toastSuccess = (m, d) =>
 export const toastWarn = (m, d) => toast(m, { type: "warn", duration: d });
 export const toastError = (m, d) =>
   toast(m, { type: "error", duration: d || 4600 });
-
-/** Error objects coming from src/net/api.js already carry Chinese messages. */
-export function toastFromError(err, fallback = "操作失败") {
-  const message = err && err.message ? err.message : fallback;
-  return toastError(message);
-}

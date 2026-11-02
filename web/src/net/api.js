@@ -11,10 +11,8 @@ const CODE_MESSAGES = {
   user_exists: "用户名已存在",
   not_found: "资源不存在",
   file_exists: "同名文件或目录已存在",
-  unsupported_media: "该文件不是 UTF-8 文本，无法在编辑器中打开",
-  invalid_path: "路径不合法",
   bad_request: "请求参数不正确",
-  internal: "服务端内部错误",
+  internal_error: "服务端内部错误",
   network_error: "无法连接服务端，请确认后端已启动",
   bad_path: "路径不合法",
   bad_filename: "文件名不合法",
@@ -37,7 +35,6 @@ const STATUS_MESSAGES = {
   404: "资源不存在",
   409: "操作冲突：目标已存在",
   413: "文件太大，无法读取或上传",
-  415: "该文件不是 UTF-8 文本，无法在编辑器中打开",
   429: "尝试过于频繁，请稍后再试",
   500: "服务端内部错误",
   502: "网关错误",
@@ -67,8 +64,9 @@ export function setUnauthorizedHandler(fn) {
   unauthorizedFired = false;
 }
 
-export function resetUnauthorizedGuard() {
-  unauthorizedFired = false;
+/** Report an expired session discovered outside `fetch` (the `/ws` handshake). */
+export function reportUnauthorized() {
+  handleUnauthorized();
 }
 
 function handleUnauthorized() {
@@ -138,12 +136,19 @@ const post = (url, body) =>
 
 // Multipart uploads need XMLHttpRequest: fetch() cannot report upload progress,
 // and a 200 MB attachment deserves a real progress bar.
-function uploadMultipart(url, form, onProgress) {
+function uploadMultipart(url, form, onProgress, signal) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new ApiError(0, "aborted", "上传已取消"));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url, true);
     xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
+    // The "cancel upload" button has to stop the request in flight, not just the loop
+    // that queues the remaining files.
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
 
     if (onProgress && xhr.upload) {
       xhr.upload.addEventListener("progress", (event) => {
@@ -220,7 +225,6 @@ export const api = {
 
   // --- files ---
   files: () => request("GET", "/api/files"),
-  file: (path) => request("GET", `/api/file?path=${encodeURIComponent(path)}`),
   createEntry: (path, kind, content = "") =>
     post("/api/files", { path, kind, content }),
   renameEntry: (from, to) => post("/api/files/rename", { from, to }),
@@ -243,6 +247,7 @@ export const api = {
       `/api/files/upload${qs ? `?${qs}` : ""}`,
       form,
       opts.onProgress,
+      opts.signal,
     );
   },
 
@@ -251,7 +256,6 @@ export const api = {
   adminSettings: () => request("GET", "/api/admin/settings"),
   updateSettings: (patch) => request("PATCH", "/api/admin/settings", patch),
 
-  health: () => request("GET", "/api/health"),
 };
 
 /** localStorage key holding the Ed25519 seed of a user. */

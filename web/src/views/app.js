@@ -1,5 +1,12 @@
 // Main workspace view (#/app).
 import { api } from "../net/api.js";
+import {
+  baseName,
+  containsPath,
+  findNode,
+  isImagePath,
+  parentPath,
+} from "../util/path.js";
 import { CollabClient } from "../net/collab.js";
 import { FileTree } from "../ui/tree.js";
 import { confirmDialog, promptDialog } from "../ui/modal.js";
@@ -13,27 +20,6 @@ import "../styles/pdf.css";
 // Both panes are Monaco (3.4 MiB) and load lazily on the first file opened.
 function isMarkdownPath(path) {
   return /\.(md|markdown)$/i.test(path || "");
-}
-
-// Formats the browser shows directly. They are not collaborative documents, so
-// they never join a room and never get an editor instance.
-const IMAGE_EXTS = [
-  "png",
-  "jpg",
-  "jpeg",
-  "gif",
-  "webp",
-  "avif",
-  "bmp",
-  "ico",
-  "svg",
-];
-
-function isImagePath(path) {
-  const name = String(path || "");
-  const idx = name.lastIndexOf(".");
-  if (idx <= 0) return false;
-  return IMAGE_EXTS.includes(name.slice(idx + 1).toLowerCase());
 }
 
 /** Same-origin URL the browser loads the bytes from (cookie auth). */
@@ -76,24 +62,6 @@ function lsSet(key, value) {
   } catch {
     /* ignore */
   }
-}
-
-function hasPath(nodes, path) {
-  for (const node of nodes || []) {
-    if (node.path === path) return true;
-    if (node.children && hasPath(node.children, path)) return true;
-  }
-  return false;
-}
-
-function parentPath(path) {
-  const idx = String(path).lastIndexOf("/");
-  return idx === -1 ? "" : path.slice(0, idx);
-}
-
-function baseName(path) {
-  const parts = String(path || "").split("/");
-  return parts[parts.length - 1] || "";
 }
 
 // ---------------------------------------------------------------- icon set
@@ -813,7 +781,7 @@ export function mountApp(host, opts) {
     if (result === null) return;
     const path = result.trim().replace(/^\/+/, "");
     try {
-      await api.createEntry(path, kind, kind === "file" ? "" : "");
+      await api.createEntry(path, kind, "");
       await reloadTree();
       if (kind === "file") await openFile(path);
       toastSuccess(kind === "file" ? `已创建 ${path}` : `已创建文件夹 ${path}`);
@@ -864,31 +832,21 @@ export function mountApp(host, opts) {
       danger: true,
     });
     if (!ok) return;
+    // The server refuses to delete a path that still has a collaboration room, and that
+    // room is usually ours — leaving the editor first is what makes deleting the file you
+    // are reading work at all.
+    const openPath = await releaseOpenRoom(path);
     try {
       await api.deleteEntry(path);
-      const affected =
-        state.currentPath === path ||
-        (state.currentPath || "").startsWith(`${path}/`);
-      if (affected) {
-        collab.dropSession(state.currentPath);
-        await closeEditor();
-        state.currentPath = null;
-        renderBreadcrumb();
-        renderStatus();
-      }
       collab.dropSession(path);
       await reloadTree();
       toastSuccess("已删除");
     } catch (err) {
+      if (openPath) await openFile(openPath).catch(() => {});
       toastError(err.message || "删除失败，请确认文件是否仍存在");
     }
   }
 
-  /**
-   * Drag-and-drop move. The tree computes source and destination; the server
-   * treats a move as a rename, so this is the same call as 重命名 — only the
-   * copy differs. Failures stay specific: every code says what to do next.
-   */
   /** Sleep helper for the room-release handshake. */
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -982,6 +940,8 @@ export function mountApp(host, opts) {
   let maxUploadBytes = 0;
   let uploading = false;
   let uploadToken = 0;
+  /** @type {AbortController|null} cancels the request that is currently on the wire. */
+  let uploadAbort = null;
   // Auto-hide timer for the "insert at cursor" result rows, plus the batch they
   // describe so the rows can be re-evaluated when a different file is opened.
   let uploadResultsTimer = 0;
@@ -1011,17 +971,6 @@ export function mountApp(host, opts) {
     return dir ? dir : "工作区根目录";
   }
 
-  function findTreeNode(nodes, path) {
-    for (const node of nodes || []) {
-      if (node.path === path) return node;
-      if (node.children) {
-        const hit = findTreeNode(node.children, path);
-        if (hit) return hit;
-      }
-    }
-    return null;
-  }
-
   /**
    * Selected file → its parent folder; selected folder → itself; nothing
    * selected → workspace root ('').
@@ -1029,7 +978,7 @@ export function mountApp(host, opts) {
   function uploadTargetDir() {
     const selected = tree.getSelected ? tree.getSelected() : state.currentPath;
     if (!selected) return "";
-    const node = findTreeNode(state.tree, selected);
+    const node = findNode(state.tree, selected);
     if (node && node.kind === "dir") return selected;
     return parentPath(selected);
   }
@@ -1284,6 +1233,10 @@ export function mountApp(host, opts) {
 
     uploading = true;
     const token = ++uploadToken;
+    // A newer upload supersedes this one: abort the request still in flight instead of
+    // letting two batches race for the same tree.
+    if (uploadAbort) uploadAbort.abort();
+    uploadAbort = new AbortController();
     const totalBytes =
       accepted.reduce((sum, file) => sum + (file.size || 0), 0) || 1;
     const uploaded = [];
@@ -1320,7 +1273,10 @@ export function mountApp(host, opts) {
 
         let payload;
         try {
-          payload = await api.upload(dir, batch, { onProgress: paint });
+          payload = await api.upload(dir, batch, {
+            onProgress: paint,
+            signal: uploadAbort.signal,
+          });
         } catch (err) {
           if (!err || err.code !== "file_exists") throw err;
           const conflictPath = dir ? `${dir}/${batch[0].name}` : batch[0].name;
@@ -1342,6 +1298,7 @@ export function mountApp(host, opts) {
           payload = await api.upload(dir, batch, {
             overwrite: true,
             onProgress: paint,
+            signal: uploadAbort.signal,
           });
         }
         const list =
@@ -1352,6 +1309,10 @@ export function mountApp(host, opts) {
     } catch (err) {
       if (token === uploadToken) {
         const code = err && err.code;
+        if (code === "aborted") {
+          /* superseded by a newer upload: the newer run reports its own outcome */
+          return;
+        }
         if (code === "too_many_files")
           toastError("一次最多上传 20 个文件，请分批上传");
         else if (code === "bad_filename")
@@ -1373,6 +1334,7 @@ export function mountApp(host, opts) {
       return;
     } finally {
       uploading = false;
+      uploadAbort = null;
       // A finished batch with images may still offer "插入到光标"; everything
       // else clears the strip right away.
       if (!uploaded.some((item) => item && item.path && isImagePath(item.path)))
@@ -1432,7 +1394,7 @@ export function mountApp(host, opts) {
     editorEmpty.style.display = "";
     previewMeta.textContent = "";
     pdfBtn.hidden = true;
-    if (preview.setBasePath) preview.setBasePath("");
+    preview.setBasePath("");
     preview.renderEmpty("无可预览内容", "打开一个 Markdown 文件即可实时预览");
   }
 
@@ -1499,6 +1461,7 @@ export function mountApp(host, opts) {
     state.saveState = "idle";
     state.cursor = null;
     state.words = 0;
+    state.peers = 0;
     renderBreadcrumb();
     // Paint the viewer first: renderStatus() reads state.imagePath for its copy.
     showImageViewer(path);
@@ -1528,6 +1491,7 @@ export function mountApp(host, opts) {
 
     state.currentPath = path;
     state.saveState = "idle";
+    state.peers = 0;
     renderBreadcrumb();
     renderStatus();
 
@@ -1559,7 +1523,7 @@ export function mountApp(host, opts) {
           awareness: session.awareness,
           onCursor: (pos) => {
             renderCursor(pos);
-            collab.reportPresence(pos, 0);
+            collab.reportPresence(pos, pos.selection || 0);
           },
           onScroll: ({ line }) => {
             if (!scrollSyncOn) return;
@@ -1576,7 +1540,7 @@ export function mountApp(host, opts) {
           awareness: session.awareness,
           onCursor: (pos) => {
             renderCursor(pos);
-            collab.reportPresence(pos, 0);
+            collab.reportPresence(pos, pos.selection || 0);
           },
         });
       }
@@ -1593,7 +1557,7 @@ export function mountApp(host, opts) {
 
     // Relative image paths (![](assets/x.png)) resolve against the open
     // document; a non-markdown file gets no base, its preview is plain text.
-    if (preview.setBasePath) preview.setBasePath(md ? path : "");
+    preview.setBasePath(md ? path : "");
 
     // Realtime preview / word count from the shared text.
     const updateText = () => {
@@ -1639,13 +1603,19 @@ export function mountApp(host, opts) {
   function markSaving() {
     state.saveState = "saving";
     renderSave();
-    // Safety net: never leave the indicator spinning if the server stays silent.
+    // Safety net: never leave the indicator spinning if the server stays silent. It may
+    // only claim success while the socket is up — the authoritative signal is the
+    // `saved` frame, and a disconnected client cannot know its edit reached disk.
     if (saveFallbackTimer) clearTimeout(saveFallbackTimer);
     saveFallbackTimer = setTimeout(() => {
       saveFallbackTimer = null;
       if (state.saveState !== "saving") return;
-      state.saveState = "saved";
-      state.saveAt = state.saveAt || Date.now();
+      if (collab.status === "open") {
+        state.saveState = "saved";
+        state.saveAt = state.saveAt || Date.now();
+      } else {
+        state.saveState = "unsaved";
+      }
       renderSave();
     }, 2500);
   }
@@ -1678,15 +1648,18 @@ export function mountApp(host, opts) {
 
   function renderSave() {
     const saving = state.saveState === "saving";
-    saveDot.className = `save-dot${saving ? " is-saving" : " is-saved"}`;
-    saveText.textContent = saving ? "保存中…" : "已保存";
-    saveIndicator.title = state.saveAt
-      ? `最后保存 ${fmtClock(state.saveAt)}`
-      : "编辑内容已实时保存";
-    statusSave.textContent = saving ? "保存中…" : "已保存";
-    statusSave.title = state.saveAt
-      ? `最后保存 ${fmtClock(state.saveAt)}`
-      : "编辑内容已实时保存";
+    const unsaved = state.saveState === "unsaved";
+    const label = saving ? "保存中…" : unsaved ? "未同步" : "已保存";
+    saveDot.className = `save-dot${saving ? " is-saving" : unsaved ? " is-unsaved" : " is-saved"}`;
+    saveText.textContent = label;
+    statusSave.textContent = label;
+    const title = unsaved
+      ? "连接已断开，改动尚未保存到服务器"
+      : state.saveAt
+        ? `最后保存 ${fmtClock(state.saveAt)}`
+        : "编辑内容已实时保存";
+    saveIndicator.title = title;
+    statusSave.title = title;
   }
 
   function renderCursor(pos) {
@@ -1702,7 +1675,9 @@ export function mountApp(host, opts) {
   }
 
   function renderStatus() {
-    statusOnline.textContent = `在线 ${state.online} 人`;
+    statusOnline.textContent = state.peers
+      ? `在线 ${state.online} 人 · 本文档 ${state.peers} 人`
+      : `在线 ${state.online} 人`;
     collabCount.replaceChildren(
       "在线 ",
       el("span", { class: "collab-count-num", text: String(state.online) }),
@@ -2144,7 +2119,7 @@ export function mountApp(host, opts) {
 
   renderSave();
   renderStatus();
-  if (preview.setBasePath) preview.setBasePath("");
+  preview.setBasePath("");
   preview.renderEmpty("无可预览内容", "打开一个 Markdown 文件即可实时预览");
   // Upload limit comes from the server; if that read fails we keep 0 (unknown)
   // and skip the pre-check entirely — the backend's 413 stays authoritative.
@@ -2162,7 +2137,7 @@ export function mountApp(host, opts) {
   reloadTree().then(() => {
     if (state.destroyed) return;
     const lastPath = lsGet("mc.lastPath", "");
-    if (lastPath && hasPath(state.tree, lastPath))
+    if (lastPath && containsPath(state.tree, lastPath))
       openFile(lastPath).catch(() => {});
   });
 
@@ -2170,6 +2145,7 @@ export function mountApp(host, opts) {
     state.destroyed = true;
     // Invalidate any in-flight upload so its callbacks stop touching a dead view.
     uploadToken += 1;
+    if (uploadAbort) uploadAbort.abort();
     hideDropOverlay();
     if (saveFallbackTimer) {
       clearTimeout(saveFallbackTimer);

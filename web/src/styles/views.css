@@ -118,15 +118,6 @@
   line-height: var(--lh-body);
 }
 
-.login-foot {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-5);
-  border-top: 1px solid var(--line-soft);
-  color: var(--fg-3);
-}
-
 /* --------------------------------------------------------------- 2FA step */
 
 .mfa-card {
@@ -390,6 +381,12 @@
   background: var(--accent);
 }
 
+.admin-role {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
 .admin-actions {
   display: inline-flex;
   align-items: center;
@@ -411,7 +408,13 @@
 }
 
 .admin-table tbody tr:hover .admin-actions,
-.admin-table tbody tr:focus-within .admin-actions {
+.admin-table tbody tr:focus-within .admin-role {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.admin-actions {
   opacity: 1;
 }
 
