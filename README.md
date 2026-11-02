@@ -145,7 +145,7 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 ```
 src/
   main.rs       主程序
-  config.rs     设置
+  config.rs     参数配置
   error.rs      错误封装
   crypto.rs     加密封装
   db.rs         数据库操作
