@@ -1,6 +1,16 @@
 // One-time private key panel: shown once after creation / regeneration.
 import { el, copyText, download } from "../util/dom.js";
+import { b64ToBytes, formatKeyTextLines } from "../util/b64.js";
 import { toastError, toastSuccess } from "../ui/toast.js";
+
+/** Turn a bare base64 seed into the `mc1-…` form; unknown input is shown unchanged. */
+function printableKey(seedB64) {
+  try {
+    return formatKeyTextLines(b64ToBytes(seedB64));
+  } catch {
+    return seedB64;
+  }
+}
 
 /**
  * @param {{username: string, privateKey: string, publicKey?: string, note?: string}} opts
@@ -14,7 +24,10 @@ export function privateKeyPanel({
 }) {
   const safeName = String(username || "user").replace(/[^a-zA-Z0-9_-]/g, "_");
 
-  const keyBox = el("pre", { class: "key-box", text: privateKey });
+  // Show and hand out the printable form (`mc1-<seed>-<crc32>`): the checksum lets the
+  // client verify a copy before trying to sign in with a damaged key.
+  const keyText = printableKey(privateKey);
+  const keyBox = el("pre", { class: "key-box", text: keyText });
   const pubBox = publicKey
     ? el("pre", { class: "key-box key-box-dim", text: publicKey })
     : null;
@@ -25,7 +38,7 @@ export function privateKeyPanel({
     text: "复制密钥",
     on: {
       click: async () => {
-        const ok = await copyText(privateKey);
+        const ok = await copyText(keyText);
         ok
           ? toastSuccess("密钥已复制到剪贴板")
           : toastError("复制失败，请手动选择文本复制");
@@ -39,7 +52,7 @@ export function privateKeyPanel({
     text: "下载 .key 文件",
     on: {
       click: () => {
-        download(`${safeName}.key`, privateKey, "text/plain;charset=utf-8");
+        download(`${safeName}.key`, keyText, "text/plain;charset=utf-8");
         toastSuccess(`已下载 ${safeName}.key`);
       },
     },

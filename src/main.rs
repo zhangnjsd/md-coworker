@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
     let cipher = Arc::new(Cipher::from_master(&cfg.master_key));
     let db = Arc::new(Db::connect(&cfg.database_url).await?);
 
+    clear_stale_temp(&cfg)?;
     bootstrap_admin(&db, &cfg).await?;
 
     let hub = Arc::new(Hub::new(cfg.clone(), cipher.clone()));
@@ -97,6 +98,29 @@ fn init_tracing() {
 
 /// First run: create the admin account, print its private key and drop a copy in
 /// `data/bootstrap-admin.key`.
+/// Drop leftover temp files from an unclean shutdown: nothing outside a running request
+/// may reference them, and leaving them would slowly fill `data/tmp`.
+fn clear_stale_temp(cfg: &Config) -> Result<()> {
+    let dir = cfg.tmp_dir();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("读取临时目录失败: {}", dir.display()));
+        }
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        tracing::info!(removed, dir = %dir.display(), "清理上次遗留的临时文件");
+    }
+    Ok(())
+}
+
 async fn bootstrap_admin(db: &Db, cfg: &Config) -> Result<()> {
     if db.count_users().await? > 0 {
         return Ok(());
@@ -117,16 +141,19 @@ async fn bootstrap_admin(db: &Db, cfg: &Config) -> Result<()> {
         std::fs::set_permissions(&key_file, perms)?;
     }
 
+    let printable = crypto::key_text(&private_key)?;
     let banner = format!(
         "\n\
         ============================================================\n\
          用户名 : {}\n\
          私钥   : {}\n\
-        ============================================================\n",
-        user.username, private_key
+        ============================================================\n\
+         请立即把私钥保存到密码管理器；该文件会在首次登录后被删除。\n\
+         私钥带校验码，登录时可以直接粘贴（也可以只粘贴 mc1- 之后的部分）。\n",
+        user.username, printable
     );
     println!("{banner}");
-    tracing::warn!(file = %key_file.display(), "管理员私钥已保存，请尽快迁移保存");
+    tracing::warn!(file = %key_file.display(), "管理员私钥已写入文件，首次登录成功后自动删除");
     Ok(())
 }
 

@@ -11,6 +11,7 @@ import {
 } from "y-protocols/awareness";
 import { bytesToB64, b64ToBytes } from "../util/b64.js";
 import { awarenessUser } from "../util/color.js";
+import { basePrefix } from "../util/path.js";
 import { reportUnauthorized } from "./api.js";
 
 const INIT_TIMEOUT_MS = 8000;
@@ -38,6 +39,7 @@ export class CollabClient {
    *   onPresence?: (users: any[]) => void,
    *   onPeers?: (path: string, count: number) => void,
    *   onSaved?: (path: string, ts: number) => void,
+   *   onSaveError?: (path: string, message: string) => void,
    *   onError?: (message: string) => void,
    * }} opts
    */
@@ -47,6 +49,7 @@ export class CollabClient {
     this.onPresence = opts.onPresence || (() => {});
     this.onPeers = opts.onPeers || (() => {});
     this.onSaved = opts.onSaved || (() => {});
+    this.onSaveError = opts.onSaveError || (() => {});
     this.onError = opts.onError || (() => {});
 
     /** @type {Map<string, Session>} */
@@ -80,7 +83,7 @@ export class CollabClient {
       return;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const url = `${proto}://${location.host}/ws`;
+    const url = `${proto}://${location.host}${basePrefix()}/ws`;
     this.#setStatus("connecting");
 
     let ws;
@@ -399,6 +402,11 @@ export class CollabClient {
         break;
       case "saved":
         this.onSaved(msg.path, msg.ts || Date.now());
+        break;
+      case "save_error":
+        // The server keeps retrying with backoff; the editor has to stop claiming the
+        // document is saved.
+        this.onSaveError(msg.path, msg.message || "保存失败");
         break;
       case "presence":
         this.onPresence(Array.isArray(msg.users) ? msg.users : []);

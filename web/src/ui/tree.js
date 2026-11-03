@@ -2,7 +2,14 @@
 // Ink & Signal shell pass: mono-weight 1.5px outline icons, 28px rows,
 // skeleton loading state, inline retry on failure, keyboard reachable rows.
 import { el, clear } from "../util/dom.js";
-import { IMAGE_EXTS, baseName, containsPath, extOf, joinPath, parentPath } from "../util/path.js";
+import {
+  IMAGE_EXTS,
+  baseName,
+  containsPath,
+  extOf,
+  joinPath,
+  parentPath,
+} from "../util/path.js";
 
 const EXPANDED_KEY = "mc.tree.expanded";
 

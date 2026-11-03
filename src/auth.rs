@@ -112,20 +112,46 @@ fn forwarded_proto_is_https(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-fn session_cookie(token: &str, ttl_secs: u64, secure: bool) -> HeaderValue {
+/// Build the session cookie.
+///
+/// `Secure` is set whenever the request came in over HTTPS (directly or through a
+/// `X-Forwarded-Proto` proxy) or when `--secure-cookies` is on; `Path` follows
+/// `--base-path` so a sub-path deployment gets a correctly scoped cookie. Both are
+/// derived from configuration, so no manual step is needed to run behind TLS.
+fn session_cookie(token: &str, ttl_secs: u64, secure: bool, path: &str) -> HeaderValue {
     let secure = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={ttl_secs}{secure}"
+        "{COOKIE_NAME}={token}; Path={path}; HttpOnly; SameSite=Lax; Max-Age={ttl_secs}{secure}"
     ))
     .expect("会话 Cookie 一定合法")
 }
 
-fn clear_cookie(secure: bool) -> HeaderValue {
+fn clear_cookie(secure: bool, path: &str) -> HeaderValue {
     let secure = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
+        "{COOKIE_NAME}=; Path={path}; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
     ))
     .expect("清理 Cookie 一定合法")
+}
+
+/// Username created on the very first start; its seed is handed out exactly once.
+const BOOTSTRAP_USERNAME: &str = "admin";
+
+/// The first-run key file exists only to hand the seed to the operator once. Delete it as
+/// soon as that administrator has actually signed in, so a plaintext private key does not
+/// stay on disk forever; the operator is told to store it elsewhere by the banner.
+fn retire_bootstrap_key(state: &AppState, user: &UserRow) {
+    if user.username != BOOTSTRAP_USERNAME || user.role != Role::Admin {
+        return;
+    }
+    let path = state.cfg.data_dir.join("bootstrap-admin.key");
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            tracing::info!(file = %path.display(), "管理员首次登录成功，已删除引导私钥文件")
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => tracing::warn!(file = %path.display(), error = %err, "删除引导私钥文件失败"),
+    }
 }
 
 async fn login_response(state: &AppState, user: &UserRow, secure: bool) -> ApiResult<Response> {
@@ -133,11 +159,17 @@ async fn login_response(state: &AppState, user: &UserRow, secure: bool) -> ApiRe
         .db
         .create_session(&user.id, state.cfg.session_ttl.as_secs() as i64)
         .await?;
+    retire_bootstrap_key(state, user);
     let body = json!({ "status": "ok", "user": UserDto::from(user) });
     let mut response = (StatusCode::OK, Json(body)).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        session_cookie(&token, state.cfg.session_ttl.as_secs(), secure),
+        session_cookie(
+            &token,
+            state.cfg.session_ttl.as_secs(),
+            secure,
+            state.cfg.cookie_path(),
+        ),
     );
     Ok(response)
 }
@@ -439,7 +471,7 @@ pub async fn logout(
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        clear_cookie(cookie_secure(&state, &headers)),
+        clear_cookie(cookie_secure(&state, &headers), state.cfg.cookie_path()),
     );
     Ok(response)
 }
@@ -488,6 +520,7 @@ pub async fn regenerate_own_keypair(
     tracing::info!(user = %auth.user.username, "用户自助重置密钥对，已吊销其它会话");
     Ok(Json(json!({
         "private_key": private_key,
+        "private_key_text": crypto::key_text(&private_key).map_err(AppError::from)?,
         "public_key": public_key,
     })))
 }

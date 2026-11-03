@@ -11,7 +11,6 @@ import { privateKeyPanel } from "../ui/secret.js";
 import { toastError, toastSuccess } from "../ui/toast.js";
 import { button, el, fmtDateTime, iconButton } from "../util/dom.js";
 
-
 /* Upload limit — the server stores bytes (docs/protocol.md §9.1), the UI speaks
  * MiB, so every value crossing the wire goes through these two helpers. */
 const BYTES_PER_MIB = 1048576;

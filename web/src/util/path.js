@@ -18,7 +18,11 @@ export const IMAGE_EXTS = [
 /** @param {string} name file name (not a path) */
 export function extOf(name) {
   const idx = String(name || "").lastIndexOf(".");
-  return idx > 0 ? String(name).slice(idx + 1).toLowerCase() : "";
+  return idx > 0
+    ? String(name)
+        .slice(idx + 1)
+        .toLowerCase()
+    : "";
 }
 
 /** @param {string} path */
@@ -71,4 +75,23 @@ export function findNode(nodes, path) {
     }
   }
   return null;
+}
+
+/**
+ * Mount point of the application: `""` at the site root, `"/cowork"` when the server was
+ * started with `--base-path /cowork`.
+ *
+ * Only `/` (and `/index.html`) return the shell, so the mount point is exactly the
+ * directory of the current document. Every absolute URL the client builds — REST, WebSocket,
+ * raw downloads — must carry this prefix.
+ */
+export function basePrefix() {
+  const { pathname } = window.location;
+  if (pathname.endsWith("/index.html")) return pathname.slice(0, -11);
+  return pathname.replace(/\/+$/, "");
+}
+
+/** Absolute backend URL for a path that starts with `/api`. */
+export function apiUrl(path) {
+  return `${basePrefix()}${path}`;
 }

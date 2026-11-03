@@ -37,6 +37,86 @@ const MAX_TREE_ENTRIES: usize = 5000;
 
 // ---------------------------------------------------------------- paths
 
+/// A fresh temporary file inside `dir`, kept out of the served workspace so an
+/// interrupted write can never show up in the file tree.
+pub fn create_temp(dir: &Path) -> Result<(std::fs::File, PathBuf)> {
+    std::fs::create_dir_all(dir).with_context(|| format!("创建临时目录失败: {}", dir.display()))?;
+    let path = dir.join(format!(".mc-tmp-{}", uuid::Uuid::new_v4()));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("创建临时文件失败: {}", path.display()))?;
+    Ok((file, path))
+}
+
+/// Flush a directory entry so a completed rename survives a power loss. Directories
+/// cannot be opened for writing everywhere, so a failure here is not fatal.
+pub fn fsync_dir(dir: &Path) {
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+}
+
+#[cfg(unix)]
+const CROSS_DEVICE: i32 = 18; // EXDEV
+#[cfg(windows)]
+const CROSS_DEVICE: i32 = 17; // ERROR_NOT_SAME_DEVICE
+#[cfg(not(any(unix, windows)))]
+const CROSS_DEVICE: i32 = -1;
+
+/// Move `tmp` onto `target` and make the replacement durable.
+///
+/// `tmp` normally lives in the data directory, which may be a different filesystem than
+/// the workspace; in that case the bytes are copied to a sibling temp file first and the
+/// rename happens within the target directory.
+pub fn commit_temp(tmp: &Path, target: &Path) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建父目录失败: {}", parent.display()))?;
+    }
+    match std::fs::rename(tmp, target) {
+        Ok(()) => {}
+        Err(err) if err.raw_os_error() == Some(CROSS_DEVICE) => {
+            let sibling = target.with_file_name(format!(".mc-tmp-{}", uuid::Uuid::new_v4()));
+            std::fs::copy(tmp, &sibling)
+                .with_context(|| format!("跨文件系统复制失败: {}", sibling.display()))?;
+            if let Ok(handle) = std::fs::File::open(&sibling) {
+                let _ = handle.sync_all();
+            }
+            std::fs::rename(&sibling, target)
+                .with_context(|| format!("替换文件失败: {}", target.display()))?;
+            let _ = std::fs::remove_file(tmp);
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(tmp);
+            return Err(err).with_context(|| format!("替换文件失败: {}", target.display()));
+        }
+    }
+    if let Some(parent) = target.parent() {
+        fsync_dir(parent);
+    }
+    Ok(())
+}
+
+/// Write `bytes` to `target` atomically and durably: temp file, `sync_all`, rename, then
+/// an fsync of the parent directory.
+pub fn write_atomic(target: &Path, bytes: &[u8], tmp_dir: &Path) -> Result<()> {
+    use std::io::Write;
+
+    let (mut file, tmp) = create_temp(tmp_dir)?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("写入临时文件失败: {}", tmp.display()));
+    drop(file);
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    commit_temp(&tmp, target)
+}
+
 /// Resolve a relative path into an absolute path inside the workspace.
 ///
 /// Rejects hidden paths (any component starting with `.`), then verifies that the joined
@@ -532,7 +612,10 @@ pub fn read_text_lossy(abs: &Path, rel: &str) -> Result<String, AppError> {
     if len > MAX_READ_BYTES {
         return Err(AppError::too_large(
             "too_large",
-            format!("{rel} 超过 {} MiB，无法协作编辑", MAX_READ_BYTES / (1024 * 1024)),
+            format!(
+                "{rel} 超过 {} MiB，无法协作编辑",
+                MAX_READ_BYTES / (1024 * 1024)
+            ),
         ));
     }
     let raw = std::fs::read(abs).with_context(|| format!("读取文件失败: {}", abs.display()))?;

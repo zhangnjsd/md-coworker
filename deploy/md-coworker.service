@@ -1,0 +1,92 @@
+# md-coworker 的 systemd 单元（Type=simple，前台运行，由 systemd 托管重启）
+#
+# 安装：
+#   sudo cp deploy/md-coworker.service /etc/systemd/system/md-coworker.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now md-coworker
+#   systemctl status md-coworker ; journalctl -u md-coworker -f
+#
+# 本文件里需要按实际情况替换的占位符（都在下面就近注释了）：
+#   User= / Group=     专用系统用户，例：sudo useradd --system --home /srv/md-coworker --shell /usr/sbin/nologin cowork
+#   WorkingDirectory=  部署根目录
+#   ExecStart=         二进制、工作区目录、数据目录、监听地址
+#   ReadWritePaths=    放行业务需要写入的两个目录（workspace 与 data）
+#
+# 部署布局见 deploy/README.md：/srv/md-coworker/{md-coworker, web/dist, workspace, data}。
+
+[Unit]
+Description=md-coworker - self-hosted Markdown collaboration server
+Documentation=file:/srv/md-coworker/deploy/README.md
+# 数据库是同机的 systemd 单元时，After 里带上它即可；不要改成 Requires=：
+# PostgreSQL 短暂重启时本服务会自动重连，不该因此被连带拖死。
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 占位符：专用系统用户与组（务必别用 root 跑）
+User=cowork
+Group=cowork
+
+# 占位符：部署根目录，二进制与 web/dist 都在这下面
+WorkingDirectory=/srv/md-coworker
+
+# 占位符：<二进制> <工作区目录> --data <数据目录> --bind <地址> [--database-url <URL>]
+#   --bind 127.0.0.1:3001   只监听回环地址，对外由 nginx 终止 TLS 并反代（见 deploy/nginx.conf）
+#   --secure-cookies        会话 Cookie 恒带 Secure（等价于反代发 X-Forwarded-Proto: https）
+#   --data 必须在工作区之外，否则后端拒绝启动（主密钥与快照不能通过文件接口泄露）
+#   子路径部署时追加 --base-path /cowork（需 v0.2 起提供）
+ExecStart=/srv/md-coworker/md-coworker /srv/md-coworker/workspace --data /srv/md-coworker/data --bind 127.0.0.1:3001 --secure-cookies
+
+Environment=MC_LOG=md_coworker=info,tower_http=warn
+
+# 数据库连接串：优先 --database-url，其次环境变量 DATABASE_URL，
+# 都没给才回退 postgres://md_coworker@127.0.0.1:5433/md_coworker（与 justfile 一致）。
+# 生产建议把带口令的 DSN 放进 root 可读的文件，而不是写死在单元里：
+#EnvironmentFile=-/etc/md-coworker/env
+#Environment=DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker
+
+Restart=always
+RestartSec=3
+
+# 保存走 400ms 防抖，SIGTERM 之后留出时间让在途写入落盘
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ---- 加固项 ----
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+
+# 整个文件系统只读，只有下面两个目录可写：
+#   workspace = 用户文档；data = master.key + crdt/ 快照
+# 换成别的路径时这里必须同步改，否则服务起不来（运行时 EROFS）
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/md-coworker/workspace /srv/md-coworker/data
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# data/ 里的主密钥与快照只给属主读写（后端自己也会把 data/ 设成 0700、master.key 设成 0600）
+UMask=0077
+
+# 每个协作房间都会占若干连接，文件与快照也要 fd
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

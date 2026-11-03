@@ -3,10 +3,16 @@ set shell := ["bash", "-uc"]
 
 workspace := env("WORKSPACE", "./workspace")
 bind      := env("BIND", "0.0.0.0:8001")
+# Mount point when serving behind a reverse proxy on a sub-path, e.g. BASE_PATH=/cowork.
+base_path := env("BASE_PATH", "")
+base_flag := if base_path == "" { "" } else { "--base-path " + base_path }
 
 # PostgreSQL: a project-local cluster keeps the demo self-contained. Point
 # DATABASE_URL at your own server to skip all of the db-* recipes.
-pg_bin  := env("PG_BIN", "/usr/lib/postgresql/18/bin")
+# The binary directory is discovered instead of pinned to one major version:
+# PG_BIN wins, then `pg_config --bindir` (Debian/Ubuntu packaging), then the
+# newest /usr/lib/postgresql/*/bin, then PATH.
+pg_bin  := `if [ -n "${PG_BIN:-}" ]; then echo "$PG_BIN"; elif command -v pg_config >/dev/null 2>&1; then pg_config --bindir; elif ls -d /usr/lib/postgresql/*/bin >/dev/null 2>&1; then ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n1; else dirname "$(command -v initdb)"; fi`
 pg_port := env("PG_PORT", "5433")
 pg_data := env("PG_DATA", "data/pg")
 pg_user := env("PG_USER", "md_coworker")
@@ -16,8 +22,14 @@ db_url  := env("DATABASE_URL", "postgres://md_coworker@127.0.0.1:5433/md_coworke
 port   := `echo "${BIND:-0.0.0.0:8001}" | cut -d: -f2`
 wsl_ip := `hostname -I | awk '{print $1}'`
 
-# bun often lives in ~/.bun/bin without being on PATH.
-bun := `command -v bun || echo "$HOME/.bun/bin/bun"`
+# Frontend/tool dependencies run on npm, which ships with Node. bun is used only
+# when npm is missing; it often lives in ~/.bun/bin without being on PATH.
+node_pm := `if command -v npm >/dev/null 2>&1; then echo npm; elif command -v bun >/dev/null 2>&1; then echo bun; elif [ -x "$HOME/.bun/bin/bun" ]; then echo "$HOME/.bun/bin/bun"; else echo npm; fi`
+
+# The seed of the first administrator. The server deletes this file as soon as
+# that account has signed in once, so the smoke and browser tests need a copy:
+# set MC_KEY_FILE, or re-run `just db-reset` to have a fresh one written.
+key_file := env("MC_KEY_FILE", "data/bootstrap-admin.key")
 
 # Print the Windows commands that put this server on the LAN (run them in an
 # elevated PowerShell, then rerun this recipe whenever WSL gets a new address)
@@ -36,12 +48,12 @@ default:
 
 # Install dependencies for the frontend and the test scripts
 install:
-    cd web && {{bun}} install
-    cd tools && {{bun}} install
+    cd web && {{node_pm}} install
+    cd tools && {{node_pm}} install
 
 # Build the frontend into web/dist
 web:
-    cd web && {{bun}} run build
+    cd web && {{node_pm}} run build
 
 # Build the backend (debug)
 build:
@@ -101,23 +113,32 @@ db-status:
 
 # Build release and run it (WORKSPACE=... BIND=... just run)
 run: db-up release
-    ./target/release/md-coworker {{workspace}} --bind {{bind}} --database-url {{db_url}}
+    ./target/release/md-coworker {{workspace}} --bind {{bind}} --database-url {{db_url}} {{base_flag}}
 
 # Run the debug build
 dev: db-up
-    cargo run -- {{workspace}} --bind {{bind}} --database-url {{db_url}}
+    cargo run -- {{workspace}} --bind {{bind}} --database-url {{db_url}} {{base_flag}}
 
 # Unit tests
 test:
     cargo test
 
+# Everything CI would run: formatting, lints, unit tests, frontend build
+check:
+    cargo fmt --check
+    cargo clippy --all-targets -- -D warnings
+    cargo test
+    cd web && {{node_pm}} run build
+
 # API / WebSocket smoke test (the server must already be running)
 smoke:
-    MC_WS_ROOT={{workspace}} node tools/smoke.mjs http://{{bind}} data/bootstrap-admin.key
+    @if [ ! -f "{{key_file}}" ]; then echo "缺少管理员私钥文件 {{key_file}}；把它保存到该路径，或用 MC_KEY_FILE 指定，或先 just db-reset" >&2; exit 1; fi
+    MC_WS_ROOT={{workspace}} node tools/smoke.mjs http://{{bind}} {{key_file}}
 
 # Real two-browser test (the server must already be running)
 browser:
-    MC_WS_FILE={{workspace}}/README.md node tools/browser.mjs http://{{bind}} data/bootstrap-admin.key
+    @if [ ! -f "{{key_file}}" ]; then echo "缺少管理员私钥文件 {{key_file}}；把它保存到该路径，或用 MC_KEY_FILE 指定，或先 just db-reset" >&2; exit 1; fi
+    MC_WS_FILE={{workspace}}/README.md node tools/browser.mjs http://{{bind}} {{key_file}}
 
 # Regenerate the screenshots used by the README
 shots:

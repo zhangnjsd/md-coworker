@@ -65,6 +65,11 @@ impl AppError {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, code, message)
     }
 
+    /// 429 for exhausted capacity that is not rate limiting (connection slots).
+    pub fn too_many(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, code, message)
+    }
+
     /// 429 with a `Retry-After` header (seconds) plus the same hint in the message so
     /// clients that only read the body still know how long to wait.
     pub fn rate_limited(retry_after_secs: u64) -> Self {

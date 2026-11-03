@@ -3,8 +3,8 @@
 本文件是前端（`web/`）与后端（`src/`）之间唯一的接口约定，描述 HTTP API、WebSocket 协作
 通道以及双方共享的数据格式与限制。协议变更必须同时更新本文件与两侧实现。
 
-- 适用版本：`0.1.1`
-- 传输：HTTP/1.1 与 WebSocket，同源部署
+- 适用版本：`0.2.0`
+- 传输：HTTP/1.1 与 WebSocket，同源部署（可挂载在子路径，见 0.5）
 - 认证：会话 Cookie `mc_sid`，服务端只保存其 SHA-256 摘要
 
 ## 0. 通用约定
@@ -51,11 +51,34 @@
 `role` 为 `admin` 或 `user`；`color` 是服务端分配的展示色（`#rrggbb`）。管理员用户列表额外
 返回 `online`（布尔）。用户名规则为 `^[A-Za-z0-9_-]{2,32}$`，比较时不区分大小写。
 
+### 0.5 部署前缀
+
+服务端可用 `--base-path <PATH>` 声明挂载点（如 `--base-path /cowork`），默认挂在站点根目录。
+配置非空时，本文件中的全部路径前再加上该前缀：`/api/files` 成为 `/cowork/api/files`，`/ws`
+成为 `/cowork/ws`，会话 Cookie 的 `Path` 也随之为 `/cowork`。该值必须是单个以 `/` 开头的
+路径段，不得含 `//`、`.`、`..` 或除 `A-Za-z0-9._-` 以外的字符。
+
+前端在运行时从文档地址推导挂载点，因此同一份构建产物既能挂在根目录，也能挂在子路径。
+
 ## 1. 认证
 
 密钥体系为 Ed25519。用户私钥是 32 字节 seed 的 Base64（44 字符），公钥是 32 字节 Base64。
 客户端用 `nacl.sign.detached(nonce, secretKey)` 生成签名，服务端用登记的公钥验签。私钥只保存
 在浏览器，服务端从不持有。
+
+对外展示与复制的私钥采用带校验码的形式：
+
+```
+mc1-<seed 的 Base64>-<seed 字节的 CRC-32，8 位小写十六进制>
+```
+
+例如 `mc1-AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=-87e6ec25`。客户端在提交前完成
+解码与校验，长度不为 32 字节或校验码不符时报「私钥校验码不匹配」，不会浪费一次挑战。裸
+Base64 仍被接受，服务端与客户端在解析时忽略其中的空白字符。
+
+首次启动时服务端创建管理员 `admin`，在标准输出打印其私钥，同时写入
+`data/bootstrap-admin.key`（权限 0600）。该文件仅供首次登录使用：`admin` 第一次登录成功后
+服务端立即删除它。请在那之前把私钥转移到密码管理器。
 
 会话 Cookie `mc_sid` 的属性为 `HttpOnly; SameSite=Lax; Path=/; Max-Age=<会话有效期>`；
 当请求带 `X-Forwarded-Proto: https` 或服务端以 `--secure-cookies` 启动时追加 `Secure`。
@@ -148,13 +171,14 @@ POST /api/auth/mfa
 
 | 接口 | 请求体 | 响应 |
 | --- | --- | --- |
-| `POST /api/me/keypair` | `{ "totp": "123456" }`（可选） | `{ "private_key", "public_key" }` |
+| `POST /api/me/keypair` | `{ "totp": "123456" }`（可选） | `{ "private_key", "private_key_text", "public_key" }` |
 | `POST /api/me/2fa/setup` | — | `{ "secret", "otpauth_url" }` |
 | `POST /api/me/2fa/enable` | `{ "code": "123456" }` | `{ "user": { … } }` |
 | `POST /api/me/2fa/disable` | `{ "code": "123456" }` | `{ "user": { … } }` |
 
 `POST /api/me/keypair` 立即作废旧公钥，并吊销除当前会话外的全部会话；新私钥只在该响应中出现
-一次。启用 2FA 的账号必须随请求提交 `totp`。
+一次。启用 2FA 的账号必须随请求提交 `totp`。响应中 `private_key` 是裸 Base64 seed，
+`private_key_text` 是同一 seed 的 `mc1-` 可校验形式（见第 1 节）。
 
 `POST /api/me/2fa/setup` 生成并加密保存新的 TOTP 种子，返回 Base32 种子与 `otpauth://` 链接；
 此时 2FA 尚未启用，账号仍为未启用状态直到 `enable` 成功。
@@ -174,12 +198,13 @@ POST /api/auth/mfa
 | 接口 | 请求体 | 响应 |
 | --- | --- | --- |
 | `GET /api/admin/users` | — | `{ "users": [ … ] }`，含 `online` |
-| `POST /api/admin/users` | `{ "username", "role" }` | `{ "user", "private_key", "public_key" }` |
-| `POST /api/admin/users/{id}/keypair` | — | `{ "private_key", "public_key" }` |
+| `POST /api/admin/users` | `{ "username", "role" }` | `{ "user", "private_key", "private_key_text", "public_key" }` |
+| `POST /api/admin/users/{id}/keypair` | — | `{ "private_key", "private_key_text", "public_key" }` |
 | `PATCH /api/admin/users/{id}` | `{ "role"?, "twofa_enabled"? }` | `{ "user": { … } }` |
 | `DELETE /api/admin/users/{id}` | — | `{ "ok": true }` |
 
-- 创建用户时服务端生成密钥对，私钥仅在该响应中出现一次。
+- 创建用户时服务端生成密钥对，私钥仅在该响应中出现一次（`private_key` 为裸 Base64，
+  `private_key_text` 为 `mc1-` 可校验形式，见第 1 节）。
 - `role` 变更受「至少保留一个管理员」约束。
 - `twofa_enabled` 只接受 `false`：管理员可强制关闭他人的 2FA（种子一并清除）；传 `true`
   返回 `400 bad_request`，启用 2FA 只能由用户本人完成。
@@ -286,6 +311,10 @@ Content-Type: multipart/form-data
 文件名取客户端提交文件名的最后一段，需满足：非空、不以 `.` 开头、不含空字符与路径分隔符、
 不超过 200 字节。同名文件在未开启覆盖时返回 `409 file_exists`。
 
+上传内容先写入 `data/tmp/` 下的临时文件（不在工作区内，因此既不会出现在文件树里，也不会
+被误当作待编辑文档），校验通过后 fsync 并原子重命名为目标文件；请求中断或失败时临时文件被
+立即清理，进程重启时也会清空该目录。
+
 响应 `201`：
 
 ```json
@@ -352,6 +381,11 @@ GET /ws   (Upgrade: websocket)
 认证沿用会话 Cookie。握手同时校验 `Origin`：缺失时放行；存在时必须与 `Host` 的主机名与端口
 一致，scheme 只能是 `http`/`https`/`ws`/`wss`，否则返回 `403 forbidden_origin`。
 
+连接数受限：同一用户同时最多 8 条、全进程最多 512 条。超限的握手返回
+`429 too_many_connections`。
+
+服务端收到客户端的 `Close` 帧会回送同码 `Close` 帧再断开，客户端不会只看到异常关闭（1006）。
+
 连接建立后每 30 秒复验一次会话，失效时服务端发送 `error` 帧并关闭连接。
 
 一条连接可以加入多个文档房间。所有帧都是 JSON 文本帧，二进制帧不支持（收到即回 `error`
@@ -380,6 +414,7 @@ GET /ws   (Upgrade: websocket)
 | `awareness` | `path`, `update` | 其他成员的光标状态；不回显给发送者 |
 | `peers` | `path`, `count` | 房间成员数变化 |
 | `saved` | `path`, `ts` | 已写入磁盘，`ts` 为毫秒时间戳 |
+| `save_error` | `path`, `message` | 落盘失败（服务端将退避重试），`message` 可直接展示 |
 | `presence` | `users` | 全局在线状态，约每秒或在变化时推送；空列表表示无人在线 |
 | `error` | `message` | 操作失败，`message` 可直接展示 |
 | `pong` | — | 对 `ping` 的回应 |
@@ -409,16 +444,33 @@ GET /ws   (Upgrade: websocket)
 
 ### 6.5 落盘
 
-房间内容在首次改动后以 400 毫秒防抖写入磁盘：先写临时文件再原子重命名，成功后广播 `saved`。
-房间清空与进程退出时立即落盘；写盘失败会保留脏标记并在下一个周期重试。
+房间内容在首次改动后以 400 毫秒防抖写入磁盘：先写 `data/tmp/` 下的临时文件，fsync 后原子
+重命名覆盖目标文件，再 fsync 父目录，成功后广播 `saved`。写盘失败时保留脏标记，按
+400 毫秒起的指数退避重试（上限 30 秒），并向房间内成员广播一次 `save_error`。房间清空与
+进程退出时立即落盘，不受退避约束。
 
 同时在 `data/crdt/` 维护加密快照，用于服务重启后恢复尚未落盘的内容；快照比磁盘文件旧时视为
 过期并丢弃。
 
 ## 7. 静态资源与前端路由
 
-后端从 `web/dist` 提供前端产物，未命中的路径回退到 `index.html`（SPA 回退）。前端使用 hash
-路由：`#/login`、`#/app`、`#/admin`。
+后端从 `web/dist` 提供前端产物，前端使用 hash 路由：`#/login`、`#/app`、`#/admin`。
+
+只有挂载点本身（`/` 或 `/<base-path>/`）返回 `index.html`；其余未命中的路径返回 `404`，
+不返回 HTML 外壳，以免拼写错误被当作前端路由。`/api/*` 下未定义的接口返回 JSON `404`，
+`code` 为 `not_found`。
+
+缓存策略：
+
+| 路径 | `Cache-Control` |
+| --- | --- |
+| `/assets/*`（带内容哈希的产物） | `public, max-age=31536000, immutable` |
+| `index.html` 与其余静态路径 | `no-cache` |
+| `/api/*`（`/api/raw` 除外） | `no-store` |
+| `/api/raw` | `private, max-age=60`（由该接口自行设置） |
+
+响应体按 `Accept-Encoding` 协商 gzip/deflate/br 压缩，但只压缩 `200` 的文本类响应：图片、视频
+与 `206` 分段响应不压缩，以免破坏 `Range` 字节偏移。
 
 所有响应都带基线安全头：`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、
 `Referrer-Policy: no-referrer`、`Cross-Origin-Opener-Policy: same-origin`，以及一份内容安全策略
@@ -432,7 +484,7 @@ GET /api/health
 ```
 
 ```json
-{ "ok": true, "name": "md-coworker", "version": "0.1.1", "database": "ok" }
+{ "ok": true, "name": "md-coworker", "version": "0.2.0", "database": "ok" }
 ```
 
 数据库不可达时返回 `503`，其中 `ok` 为 `false`、`database` 为 `"unavailable"`。
@@ -465,6 +517,8 @@ GET /api/health
 | `rate_limited` | 429 | 触发限流，响应带 `Retry-After` |
 | `self_delete` | 400 | 不能删除自己 |
 | `too_large` | 413 | 超过读取或上传上限 |
+| `not_found` | 404 | 未定义的 `/api` 接口 |
+| `too_many_connections` | 429 | 该用户或全进程的 WebSocket 连接数已达上限 |
 | `too_many_files` | 400 | 单次上传文件数超限 |
 | `totp_disabled` | 400 | 账号未启用 2FA |
 | `totp_enabled` | 409 | 账号已启用 2FA |
@@ -495,4 +549,7 @@ GET /api/health
 | `PRESENCE_INTERVAL` | 1 秒 |
 | `PRESENCE_TTL_MS` | 30000 |
 | WebSocket 会话复验间隔 | 30 秒 |
+| `MAX_CONNS_PER_USER` | 8 |
+| `MAX_CONNS_TOTAL` | 512 |
+| `SAVE_RETRY_MAX_MS` | 30000 |
 | 路径写锁超时 | 5 秒 |

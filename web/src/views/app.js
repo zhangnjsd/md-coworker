@@ -2,6 +2,7 @@
 import { api } from "../net/api.js";
 import {
   baseName,
+  basePrefix,
   containsPath,
   findNode,
   isImagePath,
@@ -24,7 +25,7 @@ function isMarkdownPath(path) {
 
 /** Same-origin URL the browser loads the bytes from (cookie auth). */
 function rawSrc(path) {
-  return `/api/raw?path=${encodeURIComponent(path)}`;
+  return `${basePrefix()}/api/raw?path=${encodeURIComponent(path)}`;
 }
 
 const LS = {
@@ -146,6 +147,7 @@ export function mountApp(host, opts) {
     editor: null,
     editorObserver: null,
     saveState: "idle",
+    saveError: "",
     saveAt: 0,
     online: 0,
     peers: 0,
@@ -666,8 +668,23 @@ export function mountApp(host, opts) {
         saveFallbackTimer = null;
       }
       state.saveState = "saved";
+      state.saveError = "";
       state.saveAt = ts;
       renderSave();
+    },
+    onSaveError: (path, message) => {
+      // The server retries with backoff, so this is not fatal — but the document is not
+      // on disk, and the indicator must say so instead of showing "已保存".
+      if (path === state.currentPath) {
+        state.saveState = "unsaved";
+        if (state.saveError !== message) {
+          state.saveError = message;
+          toastError(`${message}（服务端会自动重试）`);
+        }
+        renderSave();
+      } else {
+        toastError(`${path}：${message}`);
+      }
     },
     onError: (message) => toastError(message),
   });
@@ -1459,6 +1476,7 @@ export function mountApp(host, opts) {
 
     state.currentPath = path;
     state.saveState = "idle";
+    state.saveError = "";
     state.cursor = null;
     state.words = 0;
     state.peers = 0;
@@ -1491,6 +1509,7 @@ export function mountApp(host, opts) {
 
     state.currentPath = path;
     state.saveState = "idle";
+    state.saveError = "";
     state.peers = 0;
     renderBreadcrumb();
     renderStatus();
@@ -1551,9 +1570,7 @@ export function mountApp(host, opts) {
     }
 
     collab.setCurrentPath(path);
-    setEditorMeta(
-      `Monaco · ${md ? "Markdown" : path.split(".").pop()}`,
-    );
+    setEditorMeta(`Monaco · ${md ? "Markdown" : path.split(".").pop()}`);
 
     // Relative image paths (![](assets/x.png)) resolve against the open
     // document; a non-markdown file gets no base, its preview is plain text.
@@ -1649,15 +1666,24 @@ export function mountApp(host, opts) {
   function renderSave() {
     const saving = state.saveState === "saving";
     const unsaved = state.saveState === "unsaved";
-    const label = saving ? "保存中…" : unsaved ? "未同步" : "已保存";
+    const failed = Boolean(state.saveError);
+    const label = saving
+      ? "保存中…"
+      : unsaved
+        ? failed
+          ? "保存失败"
+          : "未同步"
+        : "已保存";
     saveDot.className = `save-dot${saving ? " is-saving" : unsaved ? " is-unsaved" : " is-saved"}`;
     saveText.textContent = label;
     statusSave.textContent = label;
-    const title = unsaved
-      ? "连接已断开，改动尚未保存到服务器"
-      : state.saveAt
-        ? `最后保存 ${fmtClock(state.saveAt)}`
-        : "编辑内容已实时保存";
+    const title = failed
+      ? `${state.saveError}（服务端会自动重试）`
+      : unsaved
+        ? "连接已断开，改动尚未保存到服务器"
+        : state.saveAt
+          ? `最后保存 ${fmtClock(state.saveAt)}`
+          : "编辑内容已实时保存";
     saveIndicator.title = title;
     statusSave.title = title;
   }

@@ -1,15 +1,14 @@
 //! Binary file uploads and raw downloads.
 //!
-//! `POST /api/files/upload` streams each part straight to a temporary file next to
-//! its target, aborts as soon as the configured limit is exceeded, and only then
-//! renames it into place — a rejected upload never leaves a half-written file
-//! behind. `GET /api/raw` serves the bytes back so the Markdown preview can show
-//! uploaded images.
+//! `POST /api/files/upload` streams each part into a temp file outside the workspace,
+//! aborts as soon as the configured limit is exceeded, and only then renames it into
+//! place — a rejected upload never leaves a half-written file behind. `GET /api/raw`
+//! serves the bytes back so the Markdown preview can show uploaded images.
 
 use crate::{
     auth::AuthUser,
     error::{ApiResult, AppError},
-    files::{mtime_ms, normalize_rel, resolve},
+    files::{self, mtime_ms, normalize_rel, resolve},
     models::AppState,
     settings,
 };
@@ -320,7 +319,8 @@ pub async fn upload(
             ));
         }
 
-        let written = stream_to_temp(&mut field, &target, &rel, limit).await?;
+        let written =
+            stream_to_temp(&mut field, &target, &rel, limit, &state.cfg.tmp_dir()).await?;
         saved.push(Saved {
             path: rel.clone(),
             size: written,
@@ -392,7 +392,7 @@ impl Drop for TempGuard {
     }
 }
 
-/// Stream one part into `<target>.mc-upload-<uuid>` and only rename it into place
+/// Stream one part into a temp file outside the workspace and only move it into place
 /// once the whole part arrived; on any failure — including a client that disappears
 /// halfway through — the temporary file is removed.
 async fn stream_to_temp(
@@ -400,15 +400,14 @@ async fn stream_to_temp(
     target: &Path,
     rel: &str,
     limit: i64,
+    tmp_dir: &Path,
 ) -> Result<i64, AppError> {
-    let dir = target.parent().unwrap_or(Path::new("."));
-    let temp: PathBuf = dir.join(format!(".mc-upload-{}", uuid::Uuid::new_v4()));
+    // The temp file lives in the data directory, never in the workspace: an interrupted
+    // upload used to leave `.mc-upload-*` debris inside the served tree, where the UI
+    // hides it and nobody can delete it.
+    let (std_file, temp) = files::create_temp(tmp_dir).map_err(AppError::from)?;
     let mut guard = TempGuard::new(temp.clone());
-
-    let mut file = tokio::fs::File::create(&temp)
-        .await
-        .with_context(|| format!("写入临时文件失败: {}", temp.display()))
-        .map_err(AppError::from)?;
+    let mut file = tokio::fs::File::from_std(std_file);
     let mut written: i64 = 0;
 
     loop {
@@ -445,13 +444,19 @@ async fn stream_to_temp(
             anyhow::Error::new(err).context("刷新上传文件失败"),
         ));
     }
-    drop(file);
-
-    if let Err(err) = tokio::fs::rename(&temp, target).await {
+    // Durability: the bytes must be on disk before the rename makes the file visible.
+    if let Err(err) = file.sync_all().await {
         return Err(AppError::internal(
-            anyhow::Error::new(err).context(format!("重命名上传文件失败: {rel}")),
+            anyhow::Error::new(err).context("同步上传文件失败"),
         ));
     }
+    drop(file);
+
+    let target = target.to_path_buf();
+    tokio::task::spawn_blocking(move || files::commit_temp(&temp, &target))
+        .await
+        .map_err(|err| AppError::internal(anyhow::Error::new(err).context("提交上传文件失败")))?
+        .map_err(|err| AppError::internal(err.context(format!("重命名上传文件失败: {rel}"))))?;
     guard.disarm();
     Ok(written)
 }

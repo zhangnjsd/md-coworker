@@ -1,6 +1,7 @@
 // md-coworker end-to-end smoke test (HTTP + WebSocket + Yjs sync + 2FA)
 // Usage: node tools/smoke.mjs [baseUrl] [bootstrapKeyFile]
 import fs from "node:fs";
+import http from "node:http";
 import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import nacl from "tweetnacl";
@@ -10,6 +11,8 @@ import * as Y from "yjs";
 const BASE = process.env.MC_BASE || process.argv[2] || "http://127.0.0.1:3000";
 const KEY_FILE = process.argv[3] || "data/bootstrap-admin.key";
 const WS_BASE = BASE.replace(/^http/, "ws");
+// A browser sends `Origin` without a path, even when the app is mounted on a sub-path.
+const ORIGIN = new URL(BASE).origin;
 // Workspace directory under test (used to verify that edits really land on disk)
 const WS_ROOT = process.env.MC_WS_ROOT || "workspace";
 
@@ -1030,7 +1033,7 @@ async function main() {
 
   const sameOriginStatus = await new Promise((resolve) => {
     const sock = new WebSocket(`${WS_BASE}/ws`, {
-      headers: { cookie: secClient.cookie, origin: BASE },
+      headers: { cookie: secClient.cookie, origin: ORIGIN },
     });
     sock.on("unexpected-response", (_req, res) => {
       resolve(res.statusCode);
@@ -1050,7 +1053,155 @@ async function main() {
 
   await admin.req("DELETE", `/api/admin/users/${secCreated.data.user.id}`);
 
-  console.log("\n=== 12. 管理员清理 ===");
+  console.log("\n=== 12. 0.2.0 行为 ===");
+
+  // #10：未定义的接口回 JSON，拼错的前端路径不再回 SPA 外壳。
+  const unknownApi = await probe.req("GET", "/api/definitely-not-here");
+  check(
+    "未定义的 /api 路径返回 JSON 404",
+    unknownApi.status === 404 && unknownApi.data?.error?.code === "not_found",
+    JSON.stringify(unknownApi.data),
+  );
+  const typo = await probe.req("GET", "/inde.html");
+  check(
+    "拼错的前端路径返回 404 而不是 HTML",
+    typo.status === 404,
+    `got ${typo.status}`,
+  );
+  const shell = await probe.req("GET", "/");
+  const shellHtml = String(shell.data?.raw || "");
+  check(
+    "挂载点返回前端外壳",
+    shell.status === 200 && shellHtml.includes("<!doctype html>"),
+    `got ${shell.status}`,
+  );
+
+  // #7：分级缓存 + 压缩。
+  const assetMatch = shellHtml.match(/src="\.\/(assets\/[^"]+)"/);
+  if (assetMatch) {
+    const asset = await probe.req("GET", `/${assetMatch[1]}`);
+    check(
+      "带哈希的产物为 immutable 缓存",
+      String(asset.headers.get("cache-control") || "").includes("immutable"),
+      String(asset.headers.get("cache-control")),
+    );
+    const encoding = await new Promise((resolve) => {
+      const req = http.request(
+        `${BASE}/${assetMatch[1]}`,
+        { headers: { "accept-encoding": "gzip" } },
+        (res) => {
+          res.resume();
+          resolve(String(res.headers["content-encoding"] || "identity"));
+        },
+      );
+      req.on("error", () => resolve("error"));
+      req.end();
+    });
+    check(
+      "文本资源按 Accept-Encoding 压缩",
+      encoding === "gzip",
+      `got ${encoding}`,
+    );
+  } else {
+    check("外壳引用了相对路径的产物", false, "未找到 ./assets/ 引用");
+  }
+  check(
+    "外壳为 no-cache",
+    String(shell.headers.get("cache-control") || "") === "no-cache",
+    String(shell.headers.get("cache-control")),
+  );
+  check(
+    "API 响应为 no-store",
+    String(health.headers.get("cache-control") || "") === "no-store",
+    String(health.headers.get("cache-control")),
+  );
+
+  // #12：私钥的可打印形式。
+  const resetKey = await admin.req(
+    "POST",
+    `/api/admin/users/${ca.data.user.id}/keypair`,
+  );
+  const keyText = String(resetKey.data?.private_key_text || "");
+  check(
+    "重置密钥返回 mc1- 可校验私钥",
+    /^mc1-[A-Za-z0-9+/=]+-[0-9a-f]{8}$/.test(keyText),
+    JSON.stringify(resetKey.data),
+  );
+  const seedFromText = keyText
+    .replace(/^mc1-/, "")
+    .replace(/-[0-9a-f]{8}$/, "");
+  check(
+    "mc1 私钥与裸 seed 一致",
+    seedFromText === resetKey.data?.private_key,
+    `${seedFromText} != ${resetKey.data?.private_key}`,
+  );
+  const printableClient = new Client("alice-printable");
+  const printableLogin = await printableClient.login(alice, seedFromText);
+  check(
+    "用可打印私钥可以登录",
+    printableLogin.status === "ok",
+    JSON.stringify(printableLogin),
+  );
+
+  // #13：连接数上限（用一个专用账号，避免受其他用例的连接影响）。
+  const limiter = `lim_${suffix}`;
+  const cl = await admin.req("POST", "/api/admin/users", {
+    username: limiter,
+    role: "user",
+  });
+  const limiterClient = new Client("limiter");
+  const limiterLogin = await limiterClient.login(limiter, cl.data.private_key);
+  check("限流用例账号登录成功", limiterLogin.status === "ok");
+
+  function openWs(cookie) {
+    return new Promise((resolve) => {
+      const sock = new WebSocket(`${WS_BASE}/ws`, {
+        headers: { cookie, origin: ORIGIN },
+      });
+      sock.on("open", () => resolve({ ok: true, status: 101, sock }));
+      sock.on("unexpected-response", (_req, res) => {
+        res.resume();
+        resolve({ ok: false, status: res.statusCode, sock: null });
+      });
+      sock.on("error", () => {});
+      setTimeout(() => resolve({ ok: false, status: -1, sock: null }), 5000);
+    });
+  }
+
+  const held = [];
+  for (let i = 0; i < 8; i += 1) held.push(await openWs(limiterClient.cookie));
+  check(
+    "同一用户前 8 条连接建立成功",
+    held.every((c) => c.ok),
+    held.map((c) => c.status).join(","),
+  );
+  const ninth = await openWs(limiterClient.cookie);
+  check(
+    "第 9 条连接被拒绝 (429 too_many_connections)",
+    ninth.ok === false && ninth.status === 429,
+    `got ${ninth.status}`,
+  );
+  for (const c of held) if (c.sock) c.sock.close();
+  await sleep(500);
+
+  // #9：服务端要回 Close 帧，客户端才不会只看到 1006。
+  const closable = await openWs(limiterClient.cookie);
+  const closeCode = await new Promise((resolve) => {
+    if (!closable.sock) return resolve(-1);
+    closable.sock.on("close", (code) => resolve(code));
+    // Let the connection settle: closing in the same tick as `open` makes the client
+    // abort the socket itself, which would report 1006 no matter what the server does.
+    setTimeout(() => closable.sock.close(1000, "bye"), 300);
+    setTimeout(() => resolve(-2), 4000);
+  });
+  check(
+    "服务端回应 Close 帧（不是 1006）",
+    closeCode === 1000,
+    `got ${closeCode}`,
+  );
+  await admin.req("DELETE", `/api/admin/users/${cl.data.user.id}`);
+
+  console.log("\n=== 13. 管理员清理 ===");
   const delUser = await admin.req(
     "DELETE",
     `/api/admin/users/${cb.data.user.id}`,

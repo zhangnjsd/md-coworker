@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 
-// The Rust backend (axum) serves `web/dist` at the server root and falls back to
-// index.html, so the bundle must be built with base '/'.
+// The bundle is referenced relatively from index.html (`./assets/...`), so the same build
+// works at the server root and under a sub-path (`--base-path /cowork`). The client derives
+// the mount point from the document URL at runtime; see src/util/path.js.
 export default defineConfig({
-  base: '/',
+  base: './',
   build: {
     outDir: 'dist',
     emptyOutDir: true,

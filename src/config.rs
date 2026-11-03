@@ -28,6 +28,7 @@ md-coworker
     --static <DIR>          前端构建产物目录，默认 ./web/dist
     --session-ttl <秒>      会话有效期，默认 604800（7 天）
     --secure-cookies        即使没有 TLS 终止代理，也强制给会话 Cookie 添加 Secure
+    --base-path <PATH>      部署在子路径下时使用，例如 /cowork（默认挂在站点根）
     -h, --help              显示本帮助
 ";
 
@@ -50,6 +51,9 @@ pub struct Config {
     /// Force the `Secure` attribute on the session cookie even when the request arrived
     /// over plain HTTP (the browser still sends it back over HTTPS).
     pub secure_cookies: bool,
+    /// Prefix the whole application is mounted under: empty for the site root, otherwise a
+    /// normalised path such as `/cowork` (leading slash, no trailing slash).
+    pub base_path: String,
 }
 
 impl Config {
@@ -60,6 +64,7 @@ impl Config {
         let mut static_dir: Option<String> = None;
         let mut database_url: Option<String> = None;
         let mut session_ttl: Option<u64> = None;
+        let mut base_path: Option<String> = None;
         let mut secure_cookies = env_flag("SECURE_COOKIES");
 
         let mut args = std::env::args().skip(1);
@@ -73,6 +78,7 @@ impl Config {
                 "--data" => data_dir = Some(args.next().context("--data 缺少参数")?),
                 "--static" => static_dir = Some(args.next().context("--static 缺少参数")?),
                 "--secure-cookies" => secure_cookies = true,
+                "--base-path" => base_path = Some(args.next().context("--base-path 缺少参数")?),
                 "--database-url" => {
                     database_url = Some(args.next().context("--database-url 缺少参数")?)
                 }
@@ -105,6 +111,8 @@ impl Config {
         std::fs::create_dir_all(data_dir.join("crdt")).with_context(|| {
             format!("无法创建 CRDT 快照目录 {}", data_dir.join("crdt").display())
         })?;
+        std::fs::create_dir_all(data_dir.join("tmp"))
+            .with_context(|| format!("无法创建临时目录 {}", data_dir.join("tmp").display()))?;
         let data_dir = std::fs::canonicalize(&data_dir)?;
         restrict_to_owner(&data_dir)?;
 
@@ -129,12 +137,51 @@ impl Config {
             master_key,
             session_ttl: Duration::from_secs(session_ttl.unwrap_or(7 * 24 * 3600)),
             secure_cookies,
+            base_path: normalize_base_path(base_path.as_deref().unwrap_or(""))?,
         })
     }
 
     pub fn snapshots_dir(&self) -> PathBuf {
         self.data_dir.join("crdt")
     }
+
+    /// Directory for temporary files written outside the workspace, so an interrupted
+    /// upload or a killed process cannot leave hidden debris in the served tree.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.data_dir.join("tmp")
+    }
+
+    /// `Path` attribute of the session cookie: the mount point, or `/` at the site root.
+    pub fn cookie_path(&self) -> &str {
+        if self.base_path.is_empty() {
+            "/"
+        } else {
+            &self.base_path
+        }
+    }
+}
+
+/// Normalise `--base-path`: `""`, `"/"` and `"cowork"` all become either `""` or a path
+/// with a leading slash and no trailing slash. Anything that could escape the mount point
+/// (dot segments, separators, spaces) is refused.
+fn normalize_base_path(raw: &str) -> Result<String> {
+    let trimmed = raw.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if trimmed.contains("//") {
+        bail!("--base-path 不能包含空路径段: {raw}");
+    }
+    for segment in trimmed.split('/') {
+        let ok = !segment.is_empty()
+            && segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+        if !ok || segment == "." || segment == ".." {
+            bail!("--base-path 的每一段只能是字母、数字、-、_、. 且不能是 . 或 ..: {raw}");
+        }
+    }
+    Ok(format!("/{trimmed}"))
 }
 
 /// Is an environment switch set to something affirmative (`1`, `true`, `yes`, `on`)?

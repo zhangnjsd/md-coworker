@@ -1,6 +1,6 @@
 [package]
 name = "md-coworker"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Real-time collaborative Markdown workspace built on Axum + Yjs CRDT"
 license = "MIT"
@@ -11,7 +11,7 @@ anyhow = "1"
 axum = { version = "0.8", features = ["ws", "json", "tokio", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
+tower-http = { version = "0.7", features = ["fs", "trace", "compression-gzip", "compression-br"] }
 
 # --- serialization ---
 serde = { version = "1", features = ["derive"] }
@@ -35,6 +35,7 @@ sqlx = { version = "0.9", default-features = false, features = [
     "tls-rustls",
     "postgres",
     "macros",
+    "migrate",
 ] }
 
 # --- misc ---

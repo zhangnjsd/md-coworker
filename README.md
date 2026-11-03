@@ -36,7 +36,8 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 需要 1 个可用的 PostgreSQL。仓库不内置数据库：
 `just db-up` 会用 `PG_BIN`（默认 `/usr/lib/postgresql/18/bin`）在 `data/pg` 建一个
 **只监听 127.0.0.1:5433、trust 认证、仅供本项目使用**的独立集群；
-连自己的数据库只要设 `DATABASE_URL` 或传 `--database-url`，表结构会在启动时自动创建。
+连自己的数据库只要设 `DATABASE_URL` 或传 `--database-url`，表结构由 `migrations/` 下的版本化
+迁移在启动时自动应用（已存在的旧库会被就地接管，不会重建）。
 
 首次启动会自动创建 `admin` 账号，把私钥打印在终端并写入 `data/bootstrap-admin.key`。**该私钥只出现这一次**，服务端不保存私钥，请立刻转存到密码管理器。
 
@@ -51,11 +52,16 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 | `--database-url <URL>` | PostgreSQL 连接串，默认取环境变量 `DATABASE_URL`，再回退 `postgres://md_coworker@127.0.0.1:5433/md_coworker` |
 | `--data <目录>` | 主密钥与 CRDT 快照目录，默认 `./data`（数据表在 PostgreSQL 里） |
 | `--static <目录>` | 前端产物目录，默认 `web/dist` |
+| `--base-path <路径>` | 挂在反向代理的子路径下时使用，如 `--base-path /cowork`；默认挂在站点根目录 |
 | `--session-ttl <小时>` | 会话有效期，默认 168 |
 
 环境变量 `MC_LOG` 可调日志级别（默认 `md_coworker=info`）。
 
 ## 账号与登录
+
+首次启动时程序会创建管理员 `admin`，在终端打印其私钥并写入 `data/bootstrap-admin.key`
+（权限 `0600`）。私钥采用带校验码的 `mc1-<base64>-<crc32>` 形式，登录时可整段粘贴；`admin`
+第一次登录成功后该文件会被自动删除，所以请在那之前把私钥存进密码管理器。
 
 - 登录使用 Ed25519 签名：服务端下发随机 nonce，客户端用私钥签名，服务端用公钥验签。
 - 私钥使用 32 字节种子（base64），只存在于用户手里；服务端只保存公钥。
@@ -108,9 +114,9 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
   `/ws` 握手校验 `Origin` 与 `Host` 一致（跨站 WebSocket 劫持防护）。
 - 单文件读取上限 100 MiB，超出返回 `413 too_large`；文件树跳过符号链接并限制深度与条目数。
 - **传输层不在本程序内**：默认监听 `0.0.0.0`（`BIND`）只方便局域网访问，服务只依赖 HTTP。
-  对外暴露时请放在 TLS 反向代理之后，并加 `--secure-cookies`（或让代理发
-  `X-Forwarded-Proto: https`）使会话 Cookie 带上 `Secure`；局域网内可用 `just port-proxy`
-  打印 WSL → Windows 的端口转发命令。
+  对外暴露时请放在 TLS 反向代理之后：会话 Cookie 在收到 `X-Forwarded-Proto: https` 时自动
+  带 `Secure`（也可以显式加 `--secure-cookies`）；挂在子路径下用 `--base-path /cowork`，
+  Cookie 的 `Path` 会自动跟随。局域网内可用 `just port-proxy` 打印 WSL → Windows 的端口转发命令。
 
 ### 数据存储
 
@@ -124,7 +130,29 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 | `mfa_tickets` | 通过第一因子后签发的 2FA 票据 | 用完即删 / 5 分钟过期 |
 | `settings` | 管理员可调的运行时配置 | 有默认值，随时可改 |
 
-表结构由 `src/db.rs` 里的 `CREATE TABLE IF NOT EXISTS` 在启动时保证，`just db-status` 可以随时查看。
+表结构由 `migrations/*.sql` 版本的迁移在启动时应用，`_sqlx_migrations` 表记录已应用的版本，
+`just db-status` 可以随时查看。
+
+## 部署边界
+
+以下 3 条是当前实现的硬性边界，不是可调项。生产部署的完整步骤（systemd、nginx、首次启动、
+升级、排错）见 [deploy/README.md](deploy/README.md)。
+
+- **只能单实例运行。** 协作房间、在线感知（presence）与广播全在进程内存里，房间之间靠 broadcast
+  channel 与路径写锁协作。因此不支持水平扩容，也不能多个副本共享同一个工作区目录：两个进程
+  各自持有一份房间状态，会把同一份文件写坏。要更高并发只能纵向扩资源。
+- **建议部署在独立子域。** 会话 Cookie `mc_sid` 是 `Path=/; HttpOnly; SameSite=Lax`，同源共享。
+  与 WordPress 等同源应用部署在同一域下时，任一处同源 XSS 都能带着这个 Cookie 调用本服务的 API
+  （`HttpOnly` 只防读取，不防被使用）。用 `cowork.example.com` 这类独立子域可以把风险隔离开。
+- **生产必须自行备份。** 数据分散在 3 处：工作区明文文件、`data/crdt/` 加密快照、PostgreSQL，
+  仓库不提供托管备份。请用 [deploy/backup.sh](deploy/backup.sh) 定期备份三者，
+  注意 `data/master.key` 与 `data/crdt/` 快照必须配套（丢了主密钥，快照就解不开，
+  但工作区明文文件不受影响，最坏只丢最后一次 400ms 防抖窗口内的改动）。
+  备份 / 恢复的具体命令与注意事项见 [deploy/README.md](deploy/README.md)。
+
+部署资产都在 `deploy/`：`md-coworker.service`（systemd）、`nginx.conf`（TLS 终止 + `/ws` 的
+Upgrade + `proxy_request_buffering off`）、`backup.sh`（数据库 + 工作区 + `data/` 一次打包）。
+另外，`data/` 与 `workspace/` 里是主密钥、可解密快照与用户文档，**不要提交进 git，也不要打进公开镜像层**。
 
 ## 界面
 

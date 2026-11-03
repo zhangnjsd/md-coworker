@@ -138,11 +138,78 @@ pub fn random_token() -> String {
 /// The private key is just the 32-byte seed the client feeds to
 /// `nacl.sign.keyPair.fromSeed`.
 pub fn generate_keypair() -> (String, String) {
-    let mut seed = [0u8; 32];
+    let mut seed = [0u8; SEED_LEN];
     rand::rng().fill_bytes(&mut seed);
     let signing = SigningKey::from_bytes(&seed);
     let public = signing.verifying_key();
     (B64.encode(seed), B64.encode(public.to_bytes()))
+}
+
+/// Length of an Ed25519 seed (and of the public key derived from it).
+pub const SEED_LEN: usize = 32;
+
+/// Prefix of the printable private-key format: `mc1-<base64 seed>-<crc32>`.
+pub const KEY_TEXT_PREFIX: &str = "mc1-";
+
+/// CRC-32 (IEEE 802.3), table-free: cheap protection against a truncated or mistyped key.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+/// Format a base64 seed as `mc1-<seed>-<crc32 hex>`, the form shown to users.
+pub fn key_text(seed_b64: &str) -> Result<String> {
+    let bytes = B64.decode(seed_b64).context("私钥不是合法的 base64")?;
+    if bytes.len() != SEED_LEN {
+        bail!("私钥必须是 {SEED_LEN} 字节种子，当前 {} 字节", bytes.len());
+    }
+    Ok(format!("{KEY_TEXT_PREFIX}{seed_b64}-{:08x}", crc32(&bytes)))
+}
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "客户端实现同一套解析，这里保留权威实现供测试对照")
+)]
+/// Parse user or file input back into the bare base64 seed.
+///
+/// Accepts the `mc1-…` form (checksum verified) and a bare base64 seed, and ignores the
+/// whitespace people introduce when copying a key out of a terminal. This runs on the
+/// client as well, so a truncated paste is reported before a challenge is wasted.
+pub fn parse_key_text(input: &str) -> std::result::Result<String, String> {
+    let compact: String = input.split_whitespace().collect();
+    if compact.is_empty() {
+        return Err("私钥不能为空".into());
+    }
+    let (seed, checksum) = match compact.strip_prefix(KEY_TEXT_PREFIX) {
+        Some(rest) => match rest.rsplit_once('-') {
+            Some((seed, crc)) => (seed, Some(crc)),
+            None => return Err("私钥格式应为 mc1-<base64>-<校验码>".into()),
+        },
+        None => (compact.as_str(), None),
+    };
+    let bytes = B64
+        .decode(seed)
+        .map_err(|_| "私钥不是合法的 base64".to_string())?;
+    if bytes.len() != SEED_LEN {
+        return Err(format!(
+            "私钥必须是 {SEED_LEN} 字节种子，当前 {} 字节",
+            bytes.len()
+        ));
+    }
+    if let Some(crc) = checksum {
+        let expected = format!("{:08x}", crc32(&bytes));
+        if crc.to_ascii_lowercase() != expected {
+            return Err("私钥校验码不匹配，可能复制不完整".into());
+        }
+    }
+    Ok(seed.to_string())
 }
 
 pub fn verifying_key_from_b64(public_key_b64: &str) -> Result<VerifyingKey> {
@@ -342,5 +409,42 @@ mod tests {
         // RFC 6238 appendix B: secret "12345678901234567890" (SHA-1), T=59s -> 94287082
         let secret = b"12345678901234567890";
         assert_eq!(totp_code(secret, 59 / 30), "287082");
+    }
+
+    #[test]
+    fn key_text_matches_the_client_checksum() {
+        // Pinned vector: web/src/util/b64.js computes the same string, so a key pasted
+        // from the UI back into the server-side parser always matches.
+        let seed = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+        assert_eq!(
+            key_text(seed).expect("格式化私钥"),
+            "mc1-AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=-87e6ec25"
+        );
+    }
+
+    #[test]
+    fn key_text_round_trips_and_rejects_damage() {
+        let (seed, _public) = generate_keypair();
+        let text = key_text(&seed).expect("格式化私钥");
+        assert!(text.starts_with(KEY_TEXT_PREFIX));
+        assert_eq!(parse_key_text(&text).expect("解析私钥"), seed);
+        // Bare base64 keeps working, so old copies stay valid.
+        assert_eq!(parse_key_text(&seed).expect("解析裸私钥"), seed);
+        // Surrounding whitespace from a terminal copy is ignored.
+        assert_eq!(
+            parse_key_text(&format!("  {}\n", seed)).expect("忽略空白"),
+            seed
+        );
+        // A truncated seed is refused instead of producing a useless signature.
+        assert!(parse_key_text(&seed[..20]).is_err());
+        assert!(parse_key_text("not base64!!").is_err());
+        // A wrong checksum is refused.
+        let damaged = format!(
+            "{}-00000000",
+            text.rsplit_once('-')
+                .map(|_| &text[..text.len() - 8])
+                .unwrap_or(&text)
+        );
+        assert!(parse_key_text(&damaged).is_err());
     }
 }

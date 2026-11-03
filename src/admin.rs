@@ -68,6 +68,7 @@ pub async fn create_user(
     Ok(Json(json!({
         "user": UserDto::from(&user),
         "private_key": private_key,
+        "private_key_text": crypto::key_text(&private_key).map_err(AppError::from)?,
         "public_key": public_key,
     })))
 }
@@ -94,6 +95,7 @@ pub async fn reset_keypair(
     Ok(Json(json!({
         "user": UserDto::from(&state.db.get_user(&user.id).await?.context("用户消失")?),
         "private_key": private_key,
+        "private_key_text": crypto::key_text(&private_key).map_err(AppError::from)?,
         "public_key": public_key,
     })))
 }

@@ -1,4 +1,5 @@
 // Markdown preview: markdown-it + KaTeX + Mermaid + highlight.js, sanitized by DOMPurify.
+import { basePrefix } from "../util/path.js";
 import MarkdownIt from "markdown-it";
 import katexPluginModule from "@vscode/markdown-it-katex";
 import hljs from "highlight.js/lib/common";
@@ -63,7 +64,6 @@ function taskListRule(state) {
   }
 }
 md.core.ruler.push("task_lists", taskListRule);
-
 
 // Mermaid is ~2.7MB, so load it on demand only when ```mermaid really appears in a document.
 let mermaidLoader = null;
@@ -247,7 +247,7 @@ function resolveAssetUrl(src) {
   const joined = decoded.startsWith("/")
     ? normalizeRelPath(decoded)
     : normalizeRelPath(baseDir() ? `${baseDir()}/${decoded}` : decoded);
-  return `/api/raw?path=${encodeURIComponent(joined)}${suffix}`;
+  return `${basePrefix()}/api/raw?path=${encodeURIComponent(joined)}${suffix}`;
 }
 
 function baseDir() {

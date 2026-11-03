@@ -31,7 +31,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -44,6 +44,12 @@ const ROOT_TEXT: &str = "content";
 const FLUSH_INTERVAL: Duration = Duration::from_millis(400);
 const PRESENCE_INTERVAL: Duration = Duration::from_millis(1000);
 const PRESENCE_TTL_MS: i64 = 30_000;
+/// Concurrent WebSocket connections allowed for one user (several tabs, several devices).
+const MAX_CONNS_PER_USER: usize = 8;
+/// Concurrent WebSocket connections allowed for the whole server.
+const MAX_CONNS_TOTAL: usize = 512;
+/// Longest wait between two save attempts for a room whose writes keep failing.
+const SAVE_RETRY_MAX_MS: i64 = 30_000;
 /// How long a rename/delete waits for another writer of the same path before giving up
 /// on ordering and proceeding (the operations it guards take microseconds).
 const PATH_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -102,6 +108,10 @@ pub enum ServerMsg {
         path: String,
         ts: i64,
     },
+    SaveError {
+        path: String,
+        message: String,
+    },
     Presence(Vec<PresenceUser>),
 }
 
@@ -113,11 +123,27 @@ pub struct Room {
     pub text: TextRef,
     pub members: AtomicUsize,
     pub dirty: AtomicBool,
+    /// Consecutive failed save attempts; drives the retry backoff.
+    fail_streak: AtomicU32,
+    /// Epoch milliseconds before which a retry is pointless.
+    next_retry_ms: AtomicI64,
 }
 
 impl Room {
     pub fn content(&self) -> String {
         self.text.get_string(&self.doc.transact())
+    }
+}
+
+/// Holds one of the WebSocket connection slots until the socket is gone.
+pub struct ConnSlot {
+    hub: Arc<Hub>,
+    user_id: String,
+}
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.hub.close_connection(&self.user_id);
     }
 }
 
@@ -135,6 +161,10 @@ pub struct Hub {
     path_locks_cv: Condvar,
     tx: broadcast::Sender<ServerMsg>,
     conn_seq: AtomicU64,
+    /// Open WebSocket connections in total and per user; a single misbehaving client must
+    /// not be able to exhaust sockets or memory.
+    total_conns: AtomicUsize,
+    user_conns: Mutex<HashMap<String, usize>>,
     last_presence: Mutex<String>,
 }
 
@@ -172,8 +202,49 @@ impl Hub {
             path_locks_cv: Condvar::new(),
             tx,
             conn_seq: AtomicU64::new(1),
+            total_conns: AtomicUsize::new(0),
+            user_conns: Mutex::new(HashMap::new()),
             last_presence: Mutex::new(String::new()),
         }
+    }
+
+    /// Reserve one of the connection slots for `user_id`.
+    ///
+    /// The returned guard releases the slot when the connection ends; a refused handshake
+    /// leaves the counters untouched.
+    pub fn open_connection(self: &Arc<Self>, user_id: &str) -> Result<ConnSlot, AppError> {
+        {
+            let mut per_user = self.user_conns.lock().expect("user_conns 锁被毒化");
+            if per_user.get(user_id).copied().unwrap_or(0) >= MAX_CONNS_PER_USER {
+                return Err(AppError::too_many(
+                    "too_many_connections",
+                    format!("同一用户的并发连接不能超过 {MAX_CONNS_PER_USER} 个"),
+                ));
+            }
+            if self.total_conns.load(Ordering::Relaxed) >= MAX_CONNS_TOTAL {
+                return Err(AppError::too_many(
+                    "too_many_connections",
+                    format!("服务器并发连接已达上限 {MAX_CONNS_TOTAL} 个，请稍后重试"),
+                ));
+            }
+            *per_user.entry(user_id.to_string()).or_insert(0) += 1;
+            self.total_conns.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(ConnSlot {
+            hub: Arc::clone(self),
+            user_id: user_id.to_string(),
+        })
+    }
+
+    fn close_connection(&self, user_id: &str) {
+        let mut per_user = self.user_conns.lock().expect("user_conns 锁被毒化");
+        if let Some(count) = per_user.get_mut(user_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                per_user.remove(user_id);
+            }
+        }
+        self.total_conns.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ServerMsg> {
@@ -283,6 +354,8 @@ impl Hub {
             text,
             members: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
+            fail_streak: AtomicU32::new(0),
+            next_retry_ms: AtomicI64::new(0),
         });
 
         if self.is_locked(path) {
@@ -392,7 +465,7 @@ impl Hub {
             count,
         });
         if count == 0 {
-            if let Err(err) = self.flush_room(room) {
+            if let Err(err) = self.flush_room_now(room) {
                 tracing::warn!(path = %room.path, error = %err, "离开房间时保存失败");
             }
             self.recycle_room(room);
@@ -432,14 +505,49 @@ impl Hub {
     /// The dirty flag is cleared up front so concurrent edits during the write are not
     /// forgotten; when any step fails it is set again, because a failed flush must be
     /// retried by the next tick instead of silently dropping the user's edits.
+    /// Flush `room` if it has unsaved changes and its backoff window has passed.
+    ///
+    /// A failing disk must not turn into a busy retry loop, and the user has to learn that
+    /// the document is not on disk: the first failure is logged and broadcast as a
+    /// `save_error` frame, later attempts stay quiet until one succeeds.
     pub fn flush_room(&self, room: &Arc<Room>) -> Result<()> {
+        if !room.dirty.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        if crate::db::now_ms() < room.next_retry_ms.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        self.flush_room_now(room)
+    }
+
+    /// Flush `room` immediately, ignoring the backoff window (leaving, shutdown).
+    pub fn flush_room_now(&self, room: &Arc<Room>) -> Result<()> {
         if !room.dirty.swap(false, Ordering::Relaxed) {
             return Ok(());
         }
         match self.write_room(room) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if room.fail_streak.swap(0, Ordering::Relaxed) > 0 {
+                    tracing::info!(path = %room.path, "保存已恢复");
+                }
+                room.next_retry_ms.store(0, Ordering::Relaxed);
+                Ok(())
+            }
             Err(err) => {
                 room.dirty.store(true, Ordering::Relaxed);
+                let streak = room.fail_streak.fetch_add(1, Ordering::Relaxed) + 1;
+                let delay = save_backoff_ms(streak);
+                room.next_retry_ms
+                    .store(crate::db::now_ms() + delay, Ordering::Relaxed);
+                if streak == 1 {
+                    tracing::warn!(path = %room.path, error = %err, "保存失败，将按退避重试");
+                    let _ = self.tx.send(ServerMsg::SaveError {
+                        path: room.path.clone(),
+                        message: format!("保存失败: {err}"),
+                    });
+                } else {
+                    tracing::debug!(path = %room.path, error = %err, streak, "保存仍然失败");
+                }
                 Err(err)
             }
         }
@@ -452,21 +560,12 @@ impl Hub {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建父目录失败: {}", parent.display()))?;
         }
-        // Write a temp file and rename it, so other tools never observe a half-written
-        // file. The name carries a random suffix: the background ticker, the
-        // last-member leave and the shutdown flush can reach the same room at once.
-        let tmp = room.file.with_file_name(format!(
-            ".{}.mc-tmp-{}",
-            room.file
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "doc".into()),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::write(&tmp, content.as_bytes())
-            .with_context(|| format!("写入临时文件失败: {}", tmp.display()))?;
-        std::fs::rename(&tmp, &room.file)
-            .with_context(|| format!("替换文件失败: {}", room.file.display()))?;
+        // Write a temp file, fsync it, rename it and fsync the directory: other tools
+        // never observe a half-written file and a crash right after "saved" cannot lose
+        // the content. The temp file lives in the data directory (outside the workspace)
+        // and carries a random suffix, because the background ticker, the last-member
+        // leave and the shutdown flush can reach the same room concurrently.
+        files::write_atomic(&room.file, content.as_bytes(), &self.cfg.tmp_dir())?;
 
         let state = room
             .doc
@@ -477,7 +576,7 @@ impl Hub {
             .seal(room.path.as_bytes(), &state)
             .context("加密 CRDT 快照失败")?;
         let snapshot = self.snapshot_path(&room.path);
-        std::fs::write(&snapshot, sealed)
+        files::write_atomic(&snapshot, &sealed, &self.cfg.tmp_dir())
             .with_context(|| format!("写入 CRDT 快照失败: {}", snapshot.display()))?;
 
         let ts = crate::db::now_ms();
@@ -497,11 +596,9 @@ impl Hub {
             .cloned()
             .collect();
         for room in rooms {
-            if room.dirty.load(Ordering::Relaxed)
-                && let Err(err) = self.flush_room(&room)
-            {
-                tracing::warn!(path = %room.path, error = %err, "定时保存失败");
-            }
+            // `flush_room` logs and broadcasts the first failure of a streak, so the
+            // ticker stays silent about errors it already reported.
+            let _ = self.flush_room(&room);
         }
     }
 
@@ -514,7 +611,7 @@ impl Hub {
             .cloned()
             .collect();
         for room in rooms {
-            if let Err(err) = self.flush_room(&room) {
+            if let Err(err) = self.flush_room_now(&room) {
                 tracing::warn!(path = %room.path, error = %err, "退出前保存失败");
             }
         }
@@ -569,10 +666,14 @@ impl Hub {
     /// Is any collaborator editing `path` or a file below it?
     pub fn active_under(&self, path: &str) -> bool {
         let needle = format!("{path}/");
-        self.rooms.lock().expect("rooms 锁被毒化").iter().any(|(key, room)| {
-            (key == path || key.starts_with(&needle))
-                && room.members.load(Ordering::Relaxed) > 0
-        })
+        self.rooms
+            .lock()
+            .expect("rooms 锁被毒化")
+            .iter()
+            .any(|(key, room)| {
+                (key == path || key.starts_with(&needle))
+                    && room.members.load(Ordering::Relaxed) > 0
+            })
     }
 
     // ------------------------------------------------------------ presence
@@ -718,7 +819,11 @@ pub async fn ws_handler(
     // Reject a cross-site handshake *before* upgrading: once the socket is open the
     // browser has already sent the cookies it holds for this origin.
     check_origin(&headers)?;
-    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, auth)))
+    let slot = state.hub.open_connection(&auth.user.id)?;
+    Ok(ws.on_upgrade(move |socket| async move {
+        handle_socket(socket, state, auth).await;
+        drop(slot);
+    }))
 }
 
 /// Split an `host[:port]` authority into a lowercase host and a port, falling back to
@@ -743,6 +848,12 @@ fn split_authority(authority: &str, default_port: u16) -> Option<(String, u16)> 
         }
         _ => Some((authority.to_ascii_lowercase(), default_port)),
     }
+}
+
+/// Exponential backoff between save attempts: 400 ms, 800 ms, 1.6 s … capped.
+fn save_backoff_ms(streak: u32) -> i64 {
+    let shift = streak.saturating_sub(1).min(6);
+    ((FLUSH_INTERVAL.as_millis() as i64) << shift).min(SAVE_RETRY_MAX_MS)
 }
 
 /// Validate the `Origin` header of a WebSocket handshake against `Host`.
@@ -831,7 +942,14 @@ async fn handle_socket(socket: WebSocket, state: AppState, auth: AuthUser) {
 
     let writer = tokio::spawn(async move {
         while let Some(message) = out_rx.recv().await {
-            if sink.send(message).await.is_err() {
+            let closing = matches!(message, Message::Close(_));
+            let res = sink.send(message).await;
+            tracing::info!(closing, ok = res.is_ok(), err = ?res.err(), "writer 写出帧");
+            if closing {
+                // Completing the handshake is what makes the peer report a normal closure:
+                // a Close frame left in the write buffer when the socket is dropped shows up
+                // as 1006 on the other side.
+                let _ = sink.close().await;
                 break;
             }
         }
@@ -858,7 +976,14 @@ async fn handle_socket(socket: WebSocket, state: AppState, auth: AuthUser) {
                 match incoming {
                     None => break,
                     Some(Err(_)) => break,
-                    Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(Message::Close(frame))) => {
+                        // Answer the closing handshake; without a reply the peer can only
+                        // report an abnormal closure (1006) instead of a clean one.
+
+                        let q = out_tx.send(Message::Close(frame)).await;
+                        tracing::info!(ok = q.is_ok(), "入队 Close 帧");
+                        break;
+                    }
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = out_tx.send(Message::Pong(payload)).await;
                     }
@@ -1114,6 +1239,12 @@ fn encode_event(msg: &ServerMsg, self_conn: u64, joined: &HashSet<String>) -> Op
                 return None;
             }
             Some(json!({ "t": "saved", "path": path, "ts": ts }).to_string())
+        }
+        ServerMsg::SaveError { path, message } => {
+            if !joined.contains(path) {
+                return None;
+            }
+            Some(json!({ "t": "save_error", "path": path, "message": message }).to_string())
         }
     }
 }

@@ -2,6 +2,8 @@
 // Every call is cookie authenticated; any 401 outside the auth endpoints
 // clears the client state and sends the user back to #/login.
 
+import { apiUrl } from "../util/path.js";
+
 const CODE_MESSAGES = {
   unauthorized: "登录状态已失效，请重新登录",
   unknown_user: "用户不存在",
@@ -95,7 +97,7 @@ async function request(method, url, body) {
 
   let res;
   try {
-    res = await fetch(url, init);
+    res = await fetch(apiUrl(url), init);
   } catch {
     throw new ApiError(0, "network_error", CODE_MESSAGES.network_error);
   }
@@ -143,7 +145,7 @@ function uploadMultipart(url, form, onProgress, signal) {
       return;
     }
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url, true);
+    xhr.open("POST", apiUrl(url), true);
     xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
     // The "cancel upload" button has to stop the request in flight, not just the loop
@@ -255,7 +257,6 @@ export const api = {
   settings: () => request("GET", "/api/settings"),
   adminSettings: () => request("GET", "/api/admin/settings"),
   updateSettings: (patch) => request("PATCH", "/api/admin/settings", patch),
-
 };
 
 /** localStorage key holding the Ed25519 seed of a user. */

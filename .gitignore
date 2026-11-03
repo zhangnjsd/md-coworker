@@ -1,6 +1,7 @@
 /target
 /data
 /workspace
+/backups
 node_modules/
 web/dist/
 *.log
