@@ -101,8 +101,8 @@ sudo install -m 755 deploy/backup.sh /srv/md-coworker/deploy/
 ## 4. PostgreSQL
 
 可以用任意一个可用的 PostgreSQL（含托管服务），也可以照 `justfile` 里 `db-*` 的方式起一个
-**只监听 127.0.0.1:5433、trust 认证、仅供本项目使用**的独立集群。表结构在启动时由
-`src/db.rs` 里的 `CREATE TABLE IF NOT EXISTS` 自动创建，不需要手工迁移。
+**只监听 127.0.0.1:5433、trust 认证、仅供本项目使用**的独立集群。表结构由 `migrations/`
+下的版本化迁移在启动时自动应用（`_sqlx_migrations` 记录已应用版本），不需要手工迁移。
 
 ```sql
 CREATE ROLE md_coworker LOGIN;
@@ -177,11 +177,13 @@ journalctl -u md-coworker -n 200 --no-pager     # 找打印私钥的那几行
 sudo cat /srv/md-coworker/data/bootstrap-admin.key
 ```
 
-立刻把私钥转存到密码管理器，然后用它登录 <https://cowork.example.com>（用户名 `admin` + 私钥），
-再在「用户管理」里给真人建号。导入完成后建议删掉磁盘上的那份副本：
+私钥是带校验码的 `mc1-<base64>-<crc32>` 形式，登录时整段粘贴即可（前端会先校验长度与校验码）。
+立刻把它转存到密码管理器，然后用它登录 <https://cowork.example.com>（用户名 `admin` + 私钥），
+再在「用户管理」里给真人建号。`admin` 第一次登录成功后服务端会自动删除该文件；如果升级前就有
+旧版本留下的副本，也建议手工清掉：
 
 ```bash
-sudo shred -u /srv/md-coworker/data/bootstrap-admin.key
+sudo shred -u /srv/md-coworker/data/bootstrap-admin.key 2>/dev/null || true
 ```
 
 > 私钥只在客户端用于 Ed25519 签名，服务端只存公钥。`admin` 的私钥丢了就只能重建账号库。
@@ -234,8 +236,8 @@ curl -fsS http://127.0.0.1:3001/api/health
 
 - **二进制与 `web/dist` 必须一起换。** 前端资源带内容哈希，只换一半会出现白屏或接口 404。
 - 重启不丢内容：编辑按 400ms 防抖落盘，协作房间在内存里但在重连时从 `data/crdt/` 快照恢复。
-- 表结构靠启动时的 `CREATE TABLE IF NOT EXISTS` 保证，**没有迁移框架**。若新版改了列结构，
-  老库可能需要手工处理——升级前的那份备份就是第一道保险。
+- 表结构由启动时的 `migrations/*.sql` 迁移保证，已应用的版本记在 `_sqlx_migrations` 里。
+  升级前仍请先备份：迁移只做加法，但回滚到旧二进制时新列不会自动消失。
 - 新版引入的参数（例如 `--base-path`，**需 v0.2 起提供**）要同步写进单元的 `ExecStart`。
 - 回滚 = 装回旧二进制 + 恢复升级前的备份（数据库与 `workspace/`、`data/` 一起回到那个时间点）。
 
