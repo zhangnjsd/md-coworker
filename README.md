@@ -37,7 +37,7 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 `just db-up` 会用 `PG_BIN`（默认 `/usr/lib/postgresql/18/bin`）在 `data/pg` 建一个
 **只监听 127.0.0.1:5433、trust 认证、仅供本项目使用**的独立集群；
 连自己的数据库只要设 `DATABASE_URL` 或传 `--database-url`，表结构由 `migrations/` 下的版本化
-迁移在启动时自动应用（已存在的旧库会被就地接管，不会重建）。
+迁移在启动时自动应用。
 
 首次启动会自动创建 `admin` 账号，把私钥打印在终端并写入 `data/bootstrap-admin.key`。**该私钥只出现这一次**，服务端不保存私钥，请立刻转存到密码管理器。
 
@@ -135,7 +135,7 @@ DATABASE_URL=postgres://md_coworker@127.0.0.1:5433/md_coworker \
 
 ## 部署边界
 
-以下 3 条是当前实现的硬性边界，不是可调项。生产部署的完整步骤（systemd、nginx、首次启动、
+以下 3 条是当前实现的硬性边界。生产部署的完整步骤（systemd、nginx、首次启动、
 升级、排错）见 [deploy/README.md](deploy/README.md)。
 
 - **只能单实例运行。** 协作房间、在线感知（presence）与广播全在进程内存里，房间之间靠 broadcast
@@ -204,7 +204,7 @@ just browser     # 浏览器渲染测试
 
 ## 常用命令
 
-本项目用 [just](https://github.com/casey/just) 管理任务，`just` 或 `just --list` 可看全部：
+本项目用 [just](https://github.com/casey/just) 管理任务，`just` 或 `just --list` 可查看帮助：
 
 ```bash
 just install     # 安装 web/ 与 tools/ 的 npm 依赖
